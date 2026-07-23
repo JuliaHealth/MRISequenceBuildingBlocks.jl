@@ -66,6 +66,10 @@ end
 function _partial_grad(piece)
     piece = _compact_piece(piece)
     t, A = piece.t, piece.A
+    amplitude_atol = 16eps(Float64) * max(maximum(abs, A), 1.0)
+    for i in eachindex(A)
+        abs(A[i]) <= amplitude_atol && (A[i] = 0.0)
+    end
     length(t) >= 2 && _is_active(piece) || return Grad(0.0, 0.0)
 
     delay = t[1]

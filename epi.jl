@@ -5,7 +5,7 @@ using Unitful
 
 # EPI keeps its own readout timing because the ramp simultaneously constrains the
 # bipolar Gx reversal and the Gy blip; it is not a Cartesian GRE readout ramp.
-function _epi_readout_params(FOV, matrix, sys, BWpp; n_shots=1)
+function _epi_readout_params(FOV, matrix, sys, BWpp; max_blip_steps=1)
     FOV_ro, FOV_pe = Float64.(FOV)
     N_ro = Int(matrix[1])
 
@@ -23,7 +23,7 @@ function _epi_readout_params(FOV, matrix, sys, BWpp; n_shots=1)
     Ta = ceil((Ta_adc + adc_center_shift) / sys.GR_Δt) * sys.GR_Δt
 
     ΔMy = 1.0 / (γ * FOV_pe)
-    M_blip = n_shots * ΔMy
+    M_blip = max_blip_steps * ΔMy
     ζ_slew = sqrt(
         (Ga^2 + sqrt(Ga^4 + 4 * sys.Smax^2 * M_blip^2)) /
         (2 * sys.Smax^2)
@@ -38,6 +38,57 @@ function _epi_readout_params(FOV, matrix, sys, BWpp; n_shots=1)
 
     return (; FOV_ro, FOV_pe, N_ro, dt, adc_center_shift, Ga, Ta_adc, Ta, ζ, ΔMy)
 end
+
+
+function _epi_line_groups(i_start, i_stop, n_shots, shot_partition)
+    lines = collect(i_start:i_stop)
+    if shot_partition == :interleaved
+        return [collect(lines[shot:n_shots:end]) for shot in 1:n_shots]
+    elseif shot_partition == :contiguous
+        base_count, extra = divrem(length(lines), n_shots)
+        groups = Vector{Vector{Int}}(undef, n_shots)
+        offset = 1
+        for shot in 1:n_shots
+            count = base_count + (shot <= extra)
+            groups[shot] = lines[offset:(offset + count - 1)]
+            offset += count
+        end
+        return groups
+    end
+    error("shot_partition must be :interleaved or :contiguous (got $shot_partition)")
+end
+
+
+function _epi_common_lobe_timing(moments, sys)
+    worst_moment = maximum(moment -> sqrt(sum(abs2, moment)), moments)
+    flat, ramp = worst_moment > 0 ?
+        _lobe_timing(worst_moment, sys) : (0.0, sys.GR_Δt)
+    return (;
+        flat,
+        ramp,
+        inv_area=worst_moment > 0 ? 1.0 / (flat + ramp) : 0.0,
+        duration=flat + 2ramp,
+    )
+end
+
+
+function _epi_gradient_lobe(moment, timing, sys)
+    seq = Sequence(sys)
+    addblock!(
+        seq;
+        x=make_trapezoid(; amplitude=moment[1] * timing.inv_area * u"T/m",
+            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
+            fall_time=timing.ramp * u"s", sys),
+        y=make_trapezoid(; amplitude=moment[2] * timing.inv_area * u"T/m",
+            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
+            fall_time=timing.ramp * u"s", sys),
+        z=make_trapezoid(; amplitude=moment[3] * timing.inv_area * u"T/m",
+            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
+            fall_time=timing.ramp * u"s", sys),
+    )
+    return seq
+end
+
 
 function _epi_adc_delay(params, polarity)
     return polarity > 0 ?
@@ -80,9 +131,61 @@ function _epi_readout_line(params, sys; polarity=1.0, line_index=0)
 end
 
 
+function _epi_echo_group(
+    lines,
+    params,
+    sys;
+    full_precenter,
+    prephaser_moment,
+    prephaser_timing,
+    rewinder_moment,
+    rewinder_timing,
+    rewind_m0,
+)
+    seq = _epi_gradient_lobe(prephaser_moment, prephaser_timing, sys)
+
+    # Koma constructors and sequence concatenation reject negative delays.
+    # Record the blips and mark them out-of-block only after assembly, when
+    # no subsequent sequence copy is required.
+    outboard_blip_blocks = Int[]
+    for echo in eachindex(lines)
+        polarity = isodd(echo) ? 1.0 : -1.0
+        line_index = lines[echo] + full_precenter
+        seq += _epi_readout_line(params, sys; polarity, line_index)
+
+        if echo < length(lines)
+            blip_moment = (lines[echo+1] - lines[echo]) * params.ΔMy
+            BLIP = Sequence(sys)
+            addblock!(
+                BLIP;
+                x=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
+                    rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys),
+                y=make_trapezoid(; amplitude=blip_moment / params.ζ * u"T/m",
+                    flat_time=0.0u"s", rise_time=params.ζ * u"s",
+                    fall_time=params.ζ * u"s", sys),
+                z=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
+                    rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys),
+            )
+            BLIP.DUR[1] = 0.0
+            seq += BLIP
+            push!(outboard_blip_blocks, length(seq))
+        end
+    end
+
+    rewind_m0 &&
+        (seq += _epi_gradient_lobe(rewinder_moment, rewinder_timing, sys))
+    for block in outboard_blip_blocks
+        seq.GR[2, block].delay = -params.ζ
+    end
+    return seq
+end
+
+
 function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
     partial_fourier=1.0,
-    n_shots=1)
+    n_shots=1,
+    shot_partition=:interleaved,
+    rewind_m0=true)
 
     length(FOV) == length(matrix) || error(
         "FOV and matrix must have the same length " *
@@ -97,6 +200,8 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
     0.5 ≤ partial_fourier ≤ 1.0 || error(
         "partial_fourier must be between 0.5 and 1.0 (got $partial_fourier)")
     n_shots isa Integer || error("n_shots must be an integer")
+    shot_partition in (:interleaved, :contiguous) || error(
+        "shot_partition must be :interleaved or :contiguous (got $shot_partition)")
 
     # Phase partial Fourier uses integer line indices; this intentionally differs
     # from the half-sample centering used for Cartesian readout partial Fourier.
@@ -107,122 +212,105 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
     N_acq = i_stop - i_start + 1
     1 ≤ n_shots ≤ N_acq || error("n_shots must be between 1 and $N_acq (got $n_shots)")
 
-    params = _epi_readout_params(FOV, matrix, sys, BWpp; n_shots)
+    line_groups = _epi_line_groups(i_start, i_stop, n_shots, shot_partition)
+    max_blip_steps = maximum(
+        lines -> length(lines) > 1 ? maximum(abs, diff(lines)) : 0,
+        line_groups,
+    )
+    params = _epi_readout_params(FOV, matrix, sys, BWpp; max_blip_steps)
     (; dt, Ga, ζ, ΔMy) = params
-    M_blip = n_shots * ΔMy
-    G_blip = M_blip / ζ
 
     n_echo = N_ro ÷ 2
     M_ro = Ga * (ζ / 2 + params.adc_center_shift + n_echo * dt)
-
     Mx_pre = -M_ro
-    Mz_pre = 0.0
-
-    function shot_geometry(shot)
-        i_first = i_start + shot - 1
-        n_lines = length(i_first:n_shots:i_stop)
-        return (; i_first, n_lines)
-    end
-
-    function design_shot_prephaser(i_first)
-        My_pre_shot = i_first * ΔMy
-        M_vec_pre_shot = sqrt(Mx_pre^2 + My_pre_shot^2 + Mz_pre^2)
-        T_p_shot, ζ_p_shot = M_vec_pre_shot > 0 ?
-            _lobe_timing(M_vec_pre_shot, sys) : (0.0, sys.GR_Δt)
-        inv_area_p_shot = M_vec_pre_shot > 0 ? 1.0 / (T_p_shot + ζ_p_shot) : 0.0
-        return (;
-            y_moment=My_pre_shot,
-            flat=T_p_shot,
-            ramp=ζ_p_shot,
-            inv_area=inv_area_p_shot,
-            duration=T_p_shot + 2ζ_p_shot,
-        )
-    end
+    readout_moment = Ga * (params.Ta + params.ζ)
+    prephaser_moments = [
+        (Mx_pre, first(lines) * ΔMy, 0.0)
+        for lines in line_groups
+    ]
+    rewinder_moments = [
+        let x_moment = Mx_pre + sum(
+                isodd(echo) ? readout_moment : -readout_moment
+                for echo in eachindex(lines)
+            )
+            (-x_moment, -last(lines) * ΔMy, 0.0)
+        end
+        for lines in line_groups
+    ]
+    prephaser_timing = _epi_common_lobe_timing(prephaser_moments, sys)
+    rewinder_timing = _epi_common_lobe_timing(rewinder_moments, sys)
 
     function build_epi(shot)
-        (; i_first, n_lines) = shot_geometry(shot)
-        prephaser = design_shot_prephaser(i_first)
-
-        PRE = Sequence(sys)
-        addblock!(
-            PRE;
-            x=make_trapezoid(; amplitude=Mx_pre * prephaser.inv_area * u"T/m",
-                flat_time=prephaser.flat * u"s", rise_time=prephaser.ramp * u"s",
-                fall_time=prephaser.ramp * u"s", sys),
-            y=make_trapezoid(; amplitude=prephaser.y_moment * prephaser.inv_area * u"T/m",
-                flat_time=prephaser.flat * u"s", rise_time=prephaser.ramp * u"s",
-                fall_time=prephaser.ramp * u"s", sys),
-            z=make_trapezoid(; amplitude=Mz_pre * prephaser.inv_area * u"T/m",
-                flat_time=prephaser.flat * u"s", rise_time=prephaser.ramp * u"s",
-                fall_time=prephaser.ramp * u"s", sys)
+        return _epi_echo_group(
+            line_groups[shot],
+            params,
+            sys;
+            full_precenter,
+            prephaser_moment=prephaser_moments[shot],
+            prephaser_timing,
+            rewinder_moment=rewinder_moments[shot],
+            rewinder_timing,
+            rewind_m0,
         )
-
-        seq = PRE
-        # Koma constructors and sequence concatenation reject negative delays.
-        # Record the blips and mark them out-of-block only after assembly, when
-        # no subsequent sequence copy is required.
-        outboard_blip_blocks = Int[]
-        for line in 1:n_lines
-            polarity = isodd(line) ? 1.0 : -1.0
-            line_index = i_first + (line - 1) * n_shots + full_precenter
-            RO = _epi_readout_line(params, sys; polarity, line_index)
-            seq += RO
-
-            if line < n_lines
-                BLIP = Sequence(sys)
-                addblock!(
-                    BLIP;
-                    x=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
-                        rise_time=ζ * u"s", fall_time=ζ * u"s", sys),
-                    y=make_trapezoid(; amplitude=G_blip * u"T/m", flat_time=0.0u"s",
-                        rise_time=ζ * u"s", fall_time=ζ * u"s", sys),
-                    z=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
-                        rise_time=ζ * u"s", fall_time=ζ * u"s", sys)
-                )
-                BLIP.DUR[1] = 0.0
-                seq += BLIP
-                push!(outboard_blip_blocks, length(seq))
-            end
-        end
-
-        for block in outboard_blip_blocks
-            seq.GR[2, block].delay = -ζ
-        end
-
-        return seq
     end
 
     function center_time(shot)
-        (; i_first) = shot_geometry(shot)
-        prephaser = design_shot_prephaser(i_first)
-        acquired_lines = collect(i_first:n_shots:i_stop)
-        center_line = argmin(abs.(acquired_lines))
+        lines = line_groups[shot]
+        center_line = argmin(abs.(lines))
         polarity = isodd(center_line) ? 1.0 : -1.0
-        return prephaser.duration +
+        return prephaser_timing.duration +
             (center_line - 1) * (params.Ta + 2params.ζ) +
             _epi_adc_delay(params, polarity) +
             n_echo * params.dt
     end
 
-    return (; readout=build_epi, center_time)
+    function echo_center_time(shot)
+        n_lines = length(line_groups[shot])
+        lower = (n_lines + 1) ÷ 2
+        upper = (n_lines + 2) ÷ 2
+        line_time(line) =
+            prephaser_timing.duration +
+            (line - 1) * (params.Ta + 2params.ζ) +
+            _epi_adc_delay(params, isodd(line) ? 1.0 : -1.0) +
+            n_echo * params.dt
+        return (line_time(lower) + line_time(upper)) / 2
+    end
+
+    return (;
+        readout=build_epi,
+        center_time,
+        echo_center_time,
+        line_groups,
+        prephaser_timing,
+        rewinder_timing,
+    )
 end
 
 
-function _epi_shot_center_time(seq, matrix, partial_fourier, n_shots, shot)
-    N_pe = Int(matrix[2])
-    full_precenter = N_pe ÷ 2
-    n_precenter = round(Int, 2 * (partial_fourier - 0.5) * full_precenter)
-    i_start = -n_precenter
-    i_stop = N_pe - 1 - full_precenter
-    acquired_lines = collect(i_start + shot - 1:n_shots:i_stop)
-    isempty(acquired_lines) && error("EPI shot $shot has no acquired lines.")
-    center_line = argmin(abs.(acquired_lines))
-    adc_blocks = findall(block -> seq.ADC[block].N > 0, 1:length(seq))
-    adc = seq.ADC[adc_blocks[center_line]]
+function _epi_adc_center_time(seq, adc_block)
+    adc = seq.ADC[adc_block]
     sample_spacing = adc.N == 1 ? 0.0 : adc.T / (adc.N - 1)
-    return get_block_start_times(seq)[adc_blocks[center_line]] +
+    return get_block_start_times(seq)[adc_block] +
         adc.delay +
         (adc.N ÷ 2) * sample_spacing
+end
+
+
+function _epi_shot_center_time(seq, lines)
+    center_line = argmin(abs.(lines))
+    adc_blocks = findall(block -> seq.ADC[block].N > 0, 1:length(seq))
+    return _epi_adc_center_time(seq, adc_blocks[center_line])
+end
+
+
+function _epi_echo_center_time(seq)
+    adc_blocks = findall(block -> seq.ADC[block].N > 0, 1:length(seq))
+    lower = (length(adc_blocks) + 1) ÷ 2
+    upper = (length(adc_blocks) + 2) ÷ 2
+    return (
+        _epi_adc_center_time(seq, adc_blocks[lower]) +
+        _epi_adc_center_time(seq, adc_blocks[upper])
+    ) / 2
 end
 
 # Koma does not currently expose this Pulseq-facing ADC check independently of
@@ -242,18 +330,26 @@ end
     epi_readout_kernel(FOV, matrix, sys; BWpp, kwargs...)
 
 Design a two-dimensional Cartesian EPI readout kernel. Phase-encoding lines
-are interleaved across shots, and each shot alternates readout polarity while
-overlapping its phase blips with the readout ramps.
+are interleaved or divided into contiguous groups across shots. Each returned
+shot is a self-contained EPI echo group with common worst-case prephaser,
+blip, and rewinder timing. Readout polarity alternates while phase blips
+overlap the readout ramps.
 
 The returned named tuple contains:
 
 - `readout(shot=1)`: build one shot with all gradients materialized inside
   Pulseq blocks;
+- `lines`: centered phase-encoding indices acquired by each shot;
 - `center_time(shot=1)`: analytically calculated time of the ADC sample nearest
   `(kx, ky) = (0, 0)`;
 - `center_time(seq, shot=1)`: recover that time from a concrete readout;
+- `echo_center_time(shot=1)`: temporal center of the EPI echo group, equal to
+  the central line's `kx=0` sample for an odd-length group;
+- `echo_center_time(seq, shot=1)`: recover that time from a concrete readout;
 - `adc_timing_ok(seq)`: check ADC dead-time and block-fit constraints;
-- `BWpp` and `n_shots`: the requested design values.
+- `FOV` and `matrix`: validated two-dimensional design geometry;
+- `BWpp`, `n_shots`, `shot_partition`, and `rewind_m0`: the requested design
+  values.
 
 ADC blocks carry zero-based `LIN` labels plus `REV`, `SEG`, `NAV`, and `AVG`
 state. `FOV` and returned timing values use SI units.
@@ -262,12 +358,18 @@ state. `FOV` and returned timing values use SI units.
 - `BWpp`: Readout bandwidth per pixel. [`Hz/pixel`]
 - `partial_fourier=1.0`: Acquired phase-encoding fraction. `ky=0` is always
   included.
-- `n_shots=1`: Number of interleaved EPI shots.
+- `n_shots=1`: Number of EPI echo groups.
+- `shot_partition=:interleaved`: Use interleaved phase-encoding lines in each
+  group. Pass `:contiguous` for adjacent line groups.
+- `rewind_m0=true`: Append a simultaneous x/y rewinder so every group ends with
+  zero gradient zeroth moment.
 """
 function epi_readout_kernel(FOV, matrix, sys::Scanner;
     BWpp,
     partial_fourier=1.0,
     n_shots=1,
+    shot_partition=:interleaved,
+    rewind_m0=true,
 )
     base = _epi_base(
         FOV,
@@ -276,6 +378,8 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
         BWpp;
         partial_fourier,
         n_shots,
+        shot_partition,
+        rewind_m0,
     )
 
     function validate_shot(shot)
@@ -290,7 +394,7 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
 
     function center_time(seq::Sequence, shot::Integer=1)
         validate_shot(shot)
-        return _epi_shot_center_time(seq, matrix, partial_fourier, n_shots, shot)
+        return _epi_shot_center_time(seq, base.line_groups[shot])
     end
 
     function center_time(shot::Integer=1)
@@ -298,11 +402,27 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
         return base.center_time(shot)
     end
 
+    function echo_center_time(seq::Sequence, shot::Integer=1)
+        validate_shot(shot)
+        return _epi_echo_center_time(seq)
+    end
+
+    function echo_center_time(shot::Integer=1)
+        validate_shot(shot)
+        return base.echo_center_time(shot)
+    end
+
     return (;
         readout,
         center_time,
+        echo_center_time,
         adc_timing_ok=seq -> _adc_events_fit_pulseq(seq, sys),
+        lines=base.line_groups,
+        FOV=Tuple(Float64.(FOV)),
+        matrix=Tuple(Int.(matrix)),
         BWpp,
         n_shots,
+        shot_partition,
+        rewind_m0,
     )
 end

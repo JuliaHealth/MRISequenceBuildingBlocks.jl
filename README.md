@@ -16,12 +16,15 @@ include("gre.jl")
 include("epi.jl")
 include("bSSFP.jl")
 include("spinEcho.jl")
+include("grase.jl")
 include("spi.jl")
 ```
 
 `gre.jl`, `epi.jl`, `bSSFP.jl`, and `spi.jl` use `_lobe_timing` from
 `gradient_design.jl`. `bSSFP.jl` also uses the GRE kernel and `rf_excitation`.
 The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
+`grase.jl` uses the EPI packet contract and the refocusing helpers from
+`spinEcho.jl`.
 
 ## Public surfaces
 
@@ -32,6 +35,7 @@ The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
 | `epi.jl` | `epi_readout_kernel` |
 | `bSSFP.jl` | `bssfp_readout_kernel`, `build_cartesian_bssfp` |
 | `spinEcho.jl` | `build_refocusing_block`, `build_spin_echo` |
+| `grase.jl` | `build_grase` |
 | `spi.jl` | `spi_linear_order`, `spi_center_out_order`, `build_spi` |
 | `preprocess.jl` | `materialize_gradients` |
 | `utils.jl` | `rf_excitation` |
@@ -40,6 +44,20 @@ GRE, EPI, and bSSFP use a small kernel contract: `readout(args...)` builds one
 concrete readout and `center_time(args...)` reports the k-space-center time
 relative to its beginning. `build_spin_echo` consumes this contract without
 branching on the readout family.
+
+`epi_readout_kernel` partitions phase-encoding lines into interleaved or
+contiguous echo groups. It designs common worst-case prephaser, blip, and
+rewinder timing across those groups, returns each group's centered line indices
+as `lines`, and rewinds every group to zero gradient zeroth moment by default.
+`echo_center_time` reports the temporal center of a group; for equal odd-length
+groups this is the same central-line ADC time for every shot.
+
+`build_grase` places equal odd-length EPI echo groups on a minimum-time train
+of spin echoes. The EPI kernel owns line grouping and packet timing; the GRASE
+builder owns only the repeated refocusing pulses, crushers, and placement of
+each packet center. Effective TE and spin-echo spacing are derived outputs.
+The assembled sequence records the three-dimensional imaging box and
+`Nx`, `Ny`, and `Nz=1` for KomaMRI raw-data conversion.
 
 ## Cartesian indices and labels
 
@@ -56,7 +74,8 @@ event, not to individual ADC dwell samples.
 ## Important boundaries
 
 - EPI temporarily represents overlapping blips outside their nominal blocks;
-  `epi_readout_kernel` materializes them before returning a readout.
+  `epi_readout_kernel` materializes them before returning an M0-refocused
+  readout.
 - `build_cartesian_bssfp` repeats only the first block and first RF coil of its
   excitation input. Other excitation moments must be included in the kernel's
   fixed-area balance.

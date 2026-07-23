@@ -22,6 +22,7 @@ top-level execution, and easy to transplant.
 | `epi.jl` | Partial-Fourier, multishot Cartesian EPI readout kernel. |
 | `bSSFP.jl` | Balanced Cartesian readout kernel and full linear bSSFP train. |
 | `spinEcho.jl` | Refocusing block and readout-independent spin-echo assembly. |
+| `grase.jl` | Minimum-time GRASE assembly from refocused EPI echo groups. |
 | `spi.jl` | Three-dimensional SPI builder and Cartesian sampling orders. |
 | `preprocess.jl` | Materialization of gradients that cross block boundaries. |
 | `utils.jl` | Small sequence-composition utilities. |
@@ -37,6 +38,7 @@ include("gre.jl")
 include("epi.jl")
 include("bSSFP.jl")
 include("spinEcho.jl")
+include("grase.jl")
 include("spi.jl")
 ```
 
@@ -114,6 +116,9 @@ scanner amplitude and slew limits. In particular:
 - partial Fourier must retain the k-space-center sample;
 - spin-echo timing is measured between RF centers and the actual readout-center
   sample;
+- GRASE requires equal odd-length M0-refocused EPI groups, with every group
+  center placed on its corresponding spin echo and `ky=0` acquired at the
+  derived effective TE;
 - SPI phase encoding must be rewound before the next TR, with the requested
   spoiler moment added to that rewind;
 - EPI gradients that intentionally cross block boundaries must be materialized
@@ -165,4 +170,3 @@ reload edited files with Revise or `include` as appropriate.
 - Phantom conversion and Koma simulation setup are adjacent workflows, not
   sequence-construction primitives.
 - Avoid accumulating large diagnostic dictionaries in `seq.DEF`.
-

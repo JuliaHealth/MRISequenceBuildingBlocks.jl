@@ -10,12 +10,13 @@ Build a slice-selective sinc excitation whose RF center lies exactly at the
 middle of its first block. RF and slice-gradient events come from
 `make_sinc_pulse`; this function only adds the symmetric block padding needed
 around them. The slice rephaser returned by `make_sinc_pulse` is appended as a
-second block. Arguments and keywords follow the Unitful `make_sinc_pulse`
+second block. The RF use defaults to `Excitation()`, which Pulseq serializes as
+`e`. Other arguments and keywords follow the Unitful `make_sinc_pulse`
 interface.
 """
-function build_centered_sinc_pulse(flip_angle, sys; kwargs...)
+function build_centered_sinc_pulse(flip_angle, sys; use=Excitation(), kwargs...)
     rf, slice_gradient, slice_rephaser =
-        make_sinc_pulse(flip_angle; sys, kwargs...)
+        make_sinc_pulse(flip_angle; sys, use, kwargs...)
     isnothing(slice_gradient) && error(
         "build_centered_sinc_pulse requires a slice_thickness.")
 
