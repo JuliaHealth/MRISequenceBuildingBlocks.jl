@@ -23,6 +23,7 @@ top-level execution, and easy to transplant.
 | `bSSFP.jl` | Balanced Cartesian readout kernel and full linear bSSFP train. |
 | `spinEcho.jl` | Refocusing block and readout-independent spin-echo assembly. |
 | `grase.jl` | Minimum-time GRASE assembly from refocused EPI echo groups. |
+| `tse.jl` | Linear or center-out turbo spin-echo acquisition assembly. |
 | `spi.jl` | Three-dimensional SPI builder and Cartesian sampling orders. |
 | `preprocess.jl` | Materialization of gradients that cross block boundaries. |
 | `utils.jl` | Small sequence-composition utilities. |
@@ -39,6 +40,7 @@ include("epi.jl")
 include("bSSFP.jl")
 include("spinEcho.jl")
 include("grase.jl")
+include("tse.jl")
 include("spi.jl")
 ```
 
@@ -119,6 +121,9 @@ scanner amplitude and slew limits. In particular:
 - GRASE requires equal odd-length M0-refocused EPI groups, with every group
   center placed on its corresponding spin echo and `ky=0` acquired at the
   derived effective TE;
+- TSE requires equal-duration M0-refocused Cartesian lines, uniform echo
+  spacing, unique phase-encoding coverage, and `ky=0` acquired on the selected
+  echo; every echo train is either triggered or padded to a requested TR;
 - SPI phase encoding must be rewound before the next TR, with the requested
   spoiler moment added to that rewind;
 - EPI gradients that intentionally cross block boundaries must be materialized

@@ -183,6 +183,95 @@ function _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
 end
 
 
+function _fit_refocused_train_timing(
+    excitation_tail,
+    packet_center,
+    packet_duration,
+    n_packets,
+    slice_thickness,
+    sys;
+    crusher_phase,
+    refocusing_phase,
+    refocusing_bandwidth,
+    refocusing_time_bw_product,
+    refocusing_apodization,
+)
+    candidates = NamedTuple[]
+    for rf_shift in 0:sys.RF_Δt:(sys.DUR_Δt - sys.RF_Δt)
+        refocus = build_refocusing_block(
+            slice_thickness,
+            sys;
+            bandwidth=refocusing_bandwidth,
+            time_bw_product=refocusing_time_bw_product,
+            phase=refocusing_phase,
+            apodization=refocusing_apodization,
+            rf_shift,
+        )
+        pre_crusher, post_crusher =
+            _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
+        refocusing_center = _sequence_rf_center(refocus)
+
+        refocusing_left = dur(pre_crusher) + refocusing_center
+        refocusing_right =
+            dur(refocus) - refocusing_center + dur(post_crusher)
+        packet_left = packet_center
+        packet_right = packet_duration - packet_center
+
+        first_half = excitation_tail + refocusing_left
+        before_packet = refocusing_right + packet_left
+        after_packet = packet_right + refocusing_left
+        target_half = n_packets == 1 ?
+            max(first_half, before_packet) :
+            max(first_half, before_packet, after_packet)
+
+        first_delay =
+            ceil_to_raster(target_half - first_half, sys.DUR_Δt)
+        pre_packet_delay =
+            ceil_to_raster(target_half - before_packet, sys.DUR_Δt)
+        post_packet_delay = n_packets == 1 ? 0.0 :
+            ceil_to_raster(target_half - after_packet, sys.DUR_Δt)
+
+        actual_first_half = first_half + first_delay
+        actual_before_packet = before_packet + pre_packet_delay
+        actual_after_packet = n_packets == 1 ?
+            actual_before_packet : after_packet + post_packet_delay
+        timing_error = n_packets == 1 ?
+            abs(actual_first_half - actual_before_packet) :
+            max(
+                abs(actual_first_half - actual_before_packet),
+                abs(actual_after_packet - actual_before_packet),
+            )
+        maximum_spacing = n_packets == 1 ?
+            actual_first_half + actual_before_packet :
+            max(
+                actual_first_half + actual_before_packet,
+                actual_after_packet + actual_before_packet,
+            )
+
+        push!(candidates, (;
+            refocus,
+            pre_crusher,
+            post_crusher,
+            refocusing_center,
+            first_delay,
+            pre_packet_delay,
+            post_packet_delay,
+            timing_error,
+            maximum_spacing,
+        ))
+    end
+
+    best = sort(candidates; by=candidate -> (
+        candidate.maximum_spacing,
+        candidate.timing_error,
+    ))[1]
+    best.timing_error <= sys.DUR_Δt + 1e-12 || error(
+        "No refocused-train timing solution centers every readout packet on a " *
+        "spin echo within one block raster.")
+    return best
+end
+
+
 function _fit_spin_echo_timing(
     excitation_tail,
     readout_center,

@@ -49,7 +49,8 @@ seconds, `G` in tesla per metre, and `frequency_offset` in hertz.
 
 This is the low-level constructor used by [`slice_selective_sinc`](@ref). The
 caller supplies a peak RF amplitude and gradient vector that already describe
-the desired slice-selection geometry.
+the desired slice-selection geometry. The serialized Pulseq RF delay is at
+least `sys.RF_dead_time` after converting from Koma's sample-center timing.
 """
 function rf_sinc(B1, T, sys, G, Δf, a, TBP)
     B1 > 0 || error("B1 must be positive")
@@ -66,15 +67,21 @@ function rf_sinc(B1, T, sys, G, Δf, a, TBP)
     A_rf = B1 .* sinc.(t ./ t0) .* ((1 - a) .+ a .* cos.((2π .* t) ./ (TBP * t0)))
     T_rew = ceil(max((T - ζ) / 2, 0.0) / sys.GR_Δt) * sys.GR_Δt
     G_rew_amp = iszero(T_rew + ζ) ? zero.(G) : G .* (-(T + ζ) / (2 * (T_rew + ζ)))
-    delay = max(0, sys.RF_dead_time - ζ)
-    rf_event = RF(collect(A_rf), diff(t_rf), Δf, delay+ζ)
+    gradient_delay = max(0, sys.RF_dead_time - ζ)
+    rf_event = RF(collect(A_rf), diff(t_rf), Δf, gradient_delay + ζ)
+    rf_delay_shortfall = sys.RF_dead_time - delay(rf_event, sys)
+    rf_delay_shortfall > 0 &&
+        (rf_event.delay += ceil_to_raster(rf_delay_shortfall, sys.RF_Δt))
     G_ss = (
         x=make_trapezoid(; amplitude=G[1] * u"T/m", flat_time=T * u"s",
-            rise_time=ζ * u"s", fall_time=ζ * u"s", delay=delay * u"s", sys),
+            rise_time=ζ * u"s", fall_time=ζ * u"s",
+            delay=gradient_delay * u"s", sys),
         y=make_trapezoid(; amplitude=G[2] * u"T/m", flat_time=T * u"s",
-            rise_time=ζ * u"s", fall_time=ζ * u"s", delay=delay * u"s", sys),
+            rise_time=ζ * u"s", fall_time=ζ * u"s",
+            delay=gradient_delay * u"s", sys),
         z=make_trapezoid(; amplitude=G[3] * u"T/m", flat_time=T * u"s",
-            rise_time=ζ * u"s", fall_time=ζ * u"s", delay=delay * u"s", sys),
+            rise_time=ζ * u"s", fall_time=ζ * u"s",
+            delay=gradient_delay * u"s", sys),
     )
     G_rew = (
         x=make_trapezoid(; amplitude=G_rew_amp[1] * u"T/m",
@@ -85,7 +92,12 @@ function rf_sinc(B1, T, sys, G, Δf, a, TBP)
             flat_time=T_rew * u"s", rise_time=ζ * u"s", fall_time=ζ * u"s", sys),
     )
     seq = Sequence(sys)
-    ringdown = make_delay((dur(rf_event) + sys.RF_ring_down_time) * u"s")
+    ringdown = make_delay(
+        ceil_to_raster(
+            dur(rf_event) + sys.RF_ring_down_time,
+            sys.DUR_Δt,
+        ) * u"s",
+    )
     @addblock seq += (rf_event, ringdown; G_ss...) + (; G_rew...)
     return seq
 end

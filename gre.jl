@@ -129,7 +129,9 @@ returned named tuple contains:
 - `readout(indices...)`: build one readout at the requested centered phase-
   encoding indices;
 - `center_time(indices...)`: time of the `kx=0` ADC sample relative to the
-  beginning of that readout.
+  beginning of that readout;
+- `FOV`, `matrix`, and `rewind_m0`: validated design geometry and rewinder
+  state.
 
 Two- and three-dimensional readouts carry zero-based `LIN` and `PAR` labels on
 their ADC blocks. `FOV`, `fixed_area`, and all returned timing values use SI
@@ -142,11 +144,14 @@ units.
   and through the asymmetric positive side; `kx=0` is always included.
 - `center_readout=false`: Symmetrically pad the readout block so `kx=0` occurs
   at its temporal midpoint.
+- `rewind_m0=false`: Append a common-duration three-axis rewinder so every
+  returned readout has zero gradient zeroth moment.
 """
 function gre_readout_kernel(FOV, matrix, sys, BWpp;
     fixed_area=(0.0, 0.0, 0.0),
     readout_partial_fourier=1.0,
-    center_readout=false)
+    center_readout=false,
+    rewind_m0=false)
 
     # ── Input validation ───────────────────────────────────────────────────────
     length(FOV) == length(matrix) || error(
@@ -189,6 +194,36 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
     G_z_pre = Az * inv_area
     readout_center = T_p + 2ζ_p + readout.adc_center
 
+    Mx_rewind = M_readout_prephaser - Ax - readout.total_moment
+    My_rewind_worst = isnothing(pe) ? abs(Ay) : max(
+        abs(pe.lo * pe.ΔM + Ay),
+        abs(pe.hi * pe.ΔM + Ay),
+    )
+    Mz_rewind_worst = isnothing(par) ? abs(Az) : max(
+        abs(par.lo * par.ΔM + Az),
+        abs(par.hi * par.ΔM + Az),
+    )
+    M_rewind = sqrt(Mx_rewind^2 + My_rewind_worst^2 + Mz_rewind_worst^2)
+    T_r, ζ_r = rewind_m0 && M_rewind > 0 ?
+        _lobe_timing(M_rewind, sys) : (0.0, sys.GR_Δt)
+    inv_area_r = rewind_m0 && M_rewind > 0 ? 1.0 / (T_r + ζ_r) : 0.0
+
+    function append_rewinder!(seq, y_moment, z_moment)
+        rewind_m0 && M_rewind > 0 || return seq
+        @addblock seq += (
+            x=make_trapezoid(; amplitude=Mx_rewind * inv_area_r * u"T/m",
+                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
+                fall_time=ζ_r * u"s", sys),
+            y=make_trapezoid(; amplitude=y_moment * inv_area_r * u"T/m",
+                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
+                fall_time=ζ_r * u"s", sys),
+            z=make_trapezoid(; amplitude=z_moment * inv_area_r * u"T/m",
+                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
+                fall_time=ζ_r * u"s", sys),
+        )
+        return seq
+    end
+
     # ── Inner callables ────────────────────────────────────────────────────────
     function gre_1D()
         PRE = Sequence(sys)
@@ -202,7 +237,7 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
         )
         seq = Sequence(sys)
         @addblock seq += PRE + RO
-        return seq
+        return append_rewinder!(seq, -Ay, -Az)
     end
 
     function gre_2D(i)
@@ -220,7 +255,7 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
         seq = Sequence(sys)
         @addblock seq += PRE + RO
         _set_cartesian_labels!(seq, i - pe.lo)
-        return seq
+        return append_rewinder!(seq, -i * pe.ΔM - Ay, -Az)
     end
 
     function gre_3D(i, j)
@@ -240,12 +275,22 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
         seq = Sequence(sys)
         @addblock seq += PRE + RO
         _set_cartesian_labels!(seq, i - pe.lo; par=j - par.lo)
-        return seq
+        return append_rewinder!(
+            seq,
+            -i * pe.ΔM - Ay,
+            -j * par.ΔM - Az,
+        )
     end
 
     build_readout = ndim == 1 ? gre_1D : ndim == 2 ? gre_2D : gre_3D
     center_time(_...) = readout_center
-    return (; readout=build_readout, center_time)
+    return (;
+        readout=build_readout,
+        center_time,
+        FOV=Tuple(Float64.(FOV)),
+        matrix=Tuple(dimensions),
+        rewind_m0,
+    )
 end
 
 

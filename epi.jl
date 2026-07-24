@@ -1,5 +1,5 @@
 using KomaMRI
-using KomaMRI.PulseDesigner: make_adc, make_label, make_trapezoid
+using KomaMRI.PulseDesigner: make_adc, make_delay, make_label, make_trapezoid
 using Unitful
 
 
@@ -97,7 +97,14 @@ function _epi_adc_delay(params, polarity)
 end
 
 
-function _epi_readout_line(params, sys; polarity=1.0, line_index=0)
+function _epi_readout_line(
+    params,
+    sys;
+    polarity=1.0,
+    line_index=0,
+    navigator=false,
+    average=0,
+)
     reversed = Int(polarity < 0)
     RO = Sequence(sys)
     addblock!(
@@ -124,8 +131,8 @@ function _epi_readout_line(params, sys; polarity=1.0, line_index=0)
         make_label(:SET, :LIN, line_index),
         make_label(:SET, :REV, reversed),
         make_label(:SET, :SEG, reversed),
-        make_label(:SET, :NAV, 0),
-        make_label(:SET, :AVG, 0),
+        make_label(:SET, :NAV, Int(navigator)),
+        make_label(:SET, :AVG, average),
     ]
     return RO
 end
@@ -254,6 +261,53 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
         )
     end
 
+    function build_navigator_readout(n_lines)
+        n_lines isa Integer || error("n_lines must be an integer.")
+        n_lines > 0 || error("n_lines must be positive.")
+
+        prephaser_moment = (Mx_pre, 0.0, 0.0)
+        line_moment = sum(
+            isodd(line) ? readout_moment : -readout_moment
+            for line in 1:n_lines
+        )
+        rewinder_moment = (-(Mx_pre + line_moment), 0.0, 0.0)
+        navigator_prephaser_timing =
+            _epi_common_lobe_timing([prephaser_moment], sys)
+        navigator_rewinder_timing =
+            _epi_common_lobe_timing([rewinder_moment], sys)
+
+        seq = _epi_gradient_lobe(
+            prephaser_moment,
+            navigator_prephaser_timing,
+            sys,
+        )
+        for line in 1:n_lines
+            seq += _epi_readout_line(
+                params,
+                sys;
+                polarity=isodd(line) ? 1.0 : -1.0,
+                line_index=full_precenter,
+                navigator=true,
+                average=Int(line == n_lines),
+            )
+        end
+        seq += _epi_gradient_lobe(
+            rewinder_moment,
+            navigator_rewinder_timing,
+            sys,
+        )
+        append!(
+            seq.EXT[end],
+            [
+                make_label(:SET, :REV, 0),
+                make_label(:SET, :SEG, 0),
+                make_label(:SET, :NAV, 0),
+                make_label(:SET, :AVG, 0),
+            ],
+        )
+        return seq
+    end
+
     function center_time(shot)
         lines = line_groups[shot]
         center_line = argmin(abs.(lines))
@@ -280,6 +334,7 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
         readout=build_epi,
         center_time,
         echo_center_time,
+        navigator_readout=build_navigator_readout,
         line_groups,
         prephaser_timing,
         rewinder_timing,
@@ -326,6 +381,32 @@ function _adc_events_fit_pulseq(seq, sys)
     return true
 end
 
+
+"""
+    build_epi_navigator(excitation, epi_kernel; n_lines=3, post_delay)
+
+Build a complete EPI navigator from an independent excitation and the readout
+timing already designed by [`epi_readout_kernel`](@ref). The navigator acquires
+`n_lines` alternating-polarity `ky=0` lines and explicitly rewinds the x
+gradient moment, so either odd or even line counts are valid.
+
+Navigator ADC blocks carry `NAV=1`, the zero-based center-line `LIN`, and
+matching `REV`/`SEG` polarity state. `AVG` is zero except on the final
+navigator line, where it is one. The terminal
+rewinder resets `NAV`, `REV`, `SEG`, and `AVG` to zero so those states cannot
+leak into a following readout. `post_delay` is a required nonnegative delay
+between the navigator and subsequent imaging excitation, rounded up to the
+block raster. The returned sequence can be prepended to an EPI acquisition or
+passed as the `navigator` keyword to [`build_grase`](@ref) or
+[`build_tse`](@ref).
+"""
+function build_epi_navigator(excitation, epi_kernel; n_lines=3, post_delay)
+    hasproperty(epi_kernel, :navigator) ||
+        error("The EPI kernel must provide `navigator`.")
+    return epi_kernel.navigator(excitation; n_lines, post_delay)
+end
+
+
 """
     epi_readout_kernel(FOV, matrix, sys; BWpp, kwargs...)
 
@@ -339,6 +420,10 @@ The returned named tuple contains:
 
 - `readout(shot=1)`: build one shot with all gradients materialized inside
   Pulseq blocks;
+- `navigator(excitation; n_lines=3, post_delay)`: build a complete navigator
+  with an independent excitation and required post-navigator delay;
+- `navigator_readout(n_lines=3)`: build only the alternating `ky=0` lines and
+  x-moment rewinder;
 - `lines`: centered phase-encoding indices acquired by each shot;
 - `center_time(shot=1)`: analytically calculated time of the ADC sample nearest
   `(kx, ky) = (0, 0)`;
@@ -412,8 +497,23 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
         return base.echo_center_time(shot)
     end
 
+    function navigator(excitation; n_lines=3, post_delay)
+        post_delay >= 0 || error("post_delay must be non-negative.")
+        actual_post_delay = ceil_to_raster(post_delay, sys.DUR_Δt)
+        seq = Sequence(sys)
+        @addblock begin
+            seq += excitation
+            seq += base.navigator_readout(n_lines)
+            actual_post_delay > 0 &&
+                (seq += make_delay(actual_post_delay * u"s"))
+        end
+        return seq
+    end
+
     return (;
         readout,
+        navigator,
+        navigator_readout=base.navigator_readout,
         center_time,
         echo_center_time,
         adc_timing_ok=seq -> _adc_events_fit_pulseq(seq, sys),

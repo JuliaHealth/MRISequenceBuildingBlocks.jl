@@ -17,14 +17,14 @@ include("epi.jl")
 include("bSSFP.jl")
 include("spinEcho.jl")
 include("grase.jl")
+include("tse.jl")
 include("spi.jl")
 ```
 
 `gre.jl`, `epi.jl`, `bSSFP.jl`, and `spi.jl` use `_lobe_timing` from
 `gradient_design.jl`. `bSSFP.jl` also uses the GRE kernel and `rf_excitation`.
 The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
-`grase.jl` uses the EPI packet contract and the refocusing helpers from
-`spinEcho.jl`.
+`grase.jl` and `tse.jl` use the refocusing helpers from `spinEcho.jl`.
 
 ## Public surfaces
 
@@ -32,10 +32,11 @@ The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
 | --- | --- |
 | `excitation.jl` | `build_centered_sinc_pulse`, `slice_selective_sinc`, `rf_sinc` |
 | `gre.jl` | `gre_readout_kernel`, `sgre_base` |
-| `epi.jl` | `epi_readout_kernel` |
+| `epi.jl` | `epi_readout_kernel`, `build_epi_navigator` |
 | `bSSFP.jl` | `bssfp_readout_kernel`, `build_cartesian_bssfp` |
 | `spinEcho.jl` | `build_refocusing_block`, `build_spin_echo` |
 | `grase.jl` | `build_grase` |
+| `tse.jl` | `build_tse` |
 | `spi.jl` | `spi_linear_order`, `spi_center_out_order`, `build_spi` |
 | `preprocess.jl` | `materialize_gradients` |
 | `utils.jl` | `rf_excitation` |
@@ -51,6 +52,19 @@ rewinder timing across those groups, returns each group's centered line indices
 as `lines`, and rewinds every group to zero gradient zeroth moment by default.
 `echo_center_time` reports the temporal center of a group; for equal odd-length
 groups this is the same central-line ADC time for every shot.
+`build_epi_navigator` adds an independent excitation to alternating `ky=0`
+readouts designed by the same EPI kernel. Its explicit x rewinder permits any
+positive navigator-line count, and its required `post_delay` separates the
+navigator from imaging. The final navigator line carries `AVG=1`; earlier lines
+carry `AVG=0`. The resulting sequence can be prepended once to an EPI
+acquisition or supplied once at sequence start to `build_grase` or `build_tse`.
+
+`gre_readout_kernel(...; rewind_m0=true)` appends a common-duration decoder so
+each Cartesian line returns all three gradient moments to zero. `build_tse`
+places those lines on a minimum-time spin-echo train and repeats the train until
+the two-dimensional matrix is covered. Linear ordering places `ky=0` on a
+selected echo; center-out ordering places it on the first echo. Every train is
+either preceded by a physiological input trigger or padded to a requested TR.
 
 `build_grase` places equal odd-length EPI echo groups on a minimum-time train
 of spin echoes. The EPI kernel owns line grouping and packet timing; the GRASE

@@ -36,7 +36,7 @@ requirement to reproduce the original scripts or their APIs exactly.
 
 ## EPI navigator and complete EPI acquisitions
 
-- [ ] Migrate the EPI navigator from `epi_nav.jl`:
+- [x] Migrate the EPI navigator from `epi_nav.jl`:
   - independent slice-selective navigator excitation;
   - configurable number of alternating center-k-space lines;
   - readout rewind to zero net x moment;
@@ -55,9 +55,8 @@ requirement to reproduce the original scripts or their APIs exactly.
   - an explicit delay between navigator and main EPI;
   - coordinated minimum-TE and bandwidth selection that is feasible for every
     acquired shot.
-- [ ] Decide the navigator repetition-label contract. The old scripts use
-  `AVG` on navigator/main acquisitions; this must describe repeated acquisition
-  events, never dwell samples inside one ADC event.
+- [x] Define the navigator `AVG` contract: use `AVG=0` on all navigator lines
+  except the final line, which uses `AVG=1`; reset it before imaging.
 
 ## Spoiled GRE acquisition builders
 

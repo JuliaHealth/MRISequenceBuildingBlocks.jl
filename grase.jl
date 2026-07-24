@@ -46,95 +46,6 @@ function _grase_epi_packets(epi_kernel)
 end
 
 
-function _fit_grase_timing(
-    excitation_tail,
-    packet_center,
-    packet_duration,
-    n_packets,
-    slice_thickness,
-    sys;
-    crusher_phase,
-    refocusing_phase,
-    refocusing_bandwidth,
-    refocusing_time_bw_product,
-    refocusing_apodization,
-)
-    candidates = NamedTuple[]
-    for rf_shift in 0:sys.RF_Δt:(sys.DUR_Δt - sys.RF_Δt)
-        refocus = build_refocusing_block(
-            slice_thickness,
-            sys;
-            bandwidth=refocusing_bandwidth,
-            time_bw_product=refocusing_time_bw_product,
-            phase=refocusing_phase,
-            apodization=refocusing_apodization,
-            rf_shift,
-        )
-        pre_crusher, post_crusher =
-            _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
-        refocusing_center = _sequence_rf_center(refocus)
-
-        refocusing_left = dur(pre_crusher) + refocusing_center
-        refocusing_right =
-            dur(refocus) - refocusing_center + dur(post_crusher)
-        packet_left = packet_center
-        packet_right = packet_duration - packet_center
-
-        first_half = excitation_tail + refocusing_left
-        before_packet = refocusing_right + packet_left
-        after_packet = packet_right + refocusing_left
-        target_half = n_packets == 1 ?
-            max(first_half, before_packet) :
-            max(first_half, before_packet, after_packet)
-
-        first_delay =
-            ceil_to_raster(target_half - first_half, sys.DUR_Δt)
-        pre_packet_delay =
-            ceil_to_raster(target_half - before_packet, sys.DUR_Δt)
-        post_packet_delay = n_packets == 1 ? 0.0 :
-            ceil_to_raster(target_half - after_packet, sys.DUR_Δt)
-
-        actual_first_half = first_half + first_delay
-        actual_before_packet = before_packet + pre_packet_delay
-        actual_after_packet = n_packets == 1 ?
-            actual_before_packet : after_packet + post_packet_delay
-        timing_error = n_packets == 1 ?
-            abs(actual_first_half - actual_before_packet) :
-            max(
-                abs(actual_first_half - actual_before_packet),
-                abs(actual_after_packet - actual_before_packet),
-            )
-        maximum_spacing = n_packets == 1 ?
-            actual_first_half + actual_before_packet :
-            max(
-                actual_first_half + actual_before_packet,
-                actual_after_packet + actual_before_packet,
-            )
-
-        push!(candidates, (;
-            refocus,
-            pre_crusher,
-            post_crusher,
-            refocusing_center,
-            first_delay,
-            pre_packet_delay,
-            post_packet_delay,
-            timing_error,
-            maximum_spacing,
-        ))
-    end
-
-    best = sort(candidates; by=candidate -> (
-        candidate.maximum_spacing,
-        candidate.timing_error,
-    ))[1]
-    best.timing_error <= sys.DUR_Δt + 1e-12 || error(
-        "No GRASE timing solution centers every EPI echo group on a spin echo " *
-        "within one block raster.")
-    return best
-end
-
-
 """
     build_grase(excitation, epi_kernel, sys; slice_thickness, kwargs...)
 
@@ -144,6 +55,7 @@ pulse is applied per EPI echo group, and each group's temporal center is placed
 on the corresponding spin echo. Groups are acquired in the kernel's natural
 order. The output definitions include the three-dimensional box
 `FOV = [FOVx, FOVy, slice_thickness]` and `Nx`, `Ny`, and `Nz=1`.
+A supplied navigator sequence is inserted once before the imaging excitation.
 
 The EPI kernel must use `rewind_m0=true` and provide equal-duration groups with
 the same odd number of lines. Exactly one group must contain `ky=0`, as its
@@ -154,6 +66,8 @@ event rasters. The resulting effective `TE` and `SpinEchoSpacing` are stored in
 
 # Keywords
 - `slice_thickness`: Refocusing slice thickness. [`m`]
+- `navigator=nothing`: Complete navigator sequence, normally from
+  [`build_epi_navigator`](@ref), inserted before the imaging excitation.
 - `crusher_phase=0.0`: Crusher phase accumulation across the slice on each
   side of a refocusing pulse. [`rad`]
 - `refocusing_phase=π/2`: Refocusing RF phase. [`rad`]
@@ -167,6 +81,7 @@ function build_grase(
     epi_kernel,
     sys;
     slice_thickness,
+    navigator=nothing,
     crusher_phase=0.0,
     refocusing_phase=π / 2,
     refocusing_bandwidth=nothing,
@@ -184,7 +99,7 @@ function build_grase(
         error("Excitation RF center is outside its sequence.")
     excitation_tail = max(excitation_tail, 0.0)
 
-    timing = _fit_grase_timing(
+    timing = _fit_refocused_train_timing(
         excitation_tail,
         packet_center,
         packet_duration,
@@ -202,6 +117,8 @@ function build_grase(
     refocusing_centers = Float64[]
     packet_centers = Float64[]
     @addblock begin
+        isnothing(navigator) || (seq += navigator)
+        excitation_start = dur(seq)
         seq += excitation
         timing.first_delay > 0 &&
             (seq += make_delay(timing.first_delay * u"s"))
@@ -228,7 +145,9 @@ function build_grase(
     end
 
     spin_echo_error = abs(
-        2refocusing_centers[1] - excitation_center - packet_centers[1],
+        2refocusing_centers[1] -
+        (excitation_start + excitation_center) -
+        packet_centers[1],
     )
     for group in 2:length(packets)
         spin_echo_error = max(
@@ -245,14 +164,15 @@ function build_grase(
         "$(spin_echo_error) s.")
 
     spin_echo_spacing = length(packets) == 1 ?
-        packet_centers[1] - excitation_center :
+        packet_centers[1] - (excitation_start + excitation_center) :
         packet_centers[2] - packet_centers[1]
     all(
         spacing -> isapprox(spacing, spin_echo_spacing; rtol=0, atol=1e-12),
         diff(packet_centers),
     ) || error("Assembled GRASE spin-echo spacing is not uniform.")
 
-    seq.DEF["TE"] = packet_centers[zero_group] - excitation_center
+    seq.DEF["TE"] =
+        packet_centers[zero_group] - (excitation_start + excitation_center)
     seq.DEF["SpinEchoSpacing"] = spin_echo_spacing
     seq.DEF["FOV"] = [epi_kernel.FOV..., Float64(slice_thickness)]
     seq.DEF["Nx"], seq.DEF["Ny"] = epi_kernel.matrix
