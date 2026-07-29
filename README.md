@@ -10,31 +10,40 @@ constructors.
 ```julia
 include("gradient_design.jl")
 include("utils.jl")
+include("cartesian.jl")
 include("preprocess.jl")
 include("excitation.jl")
 include("gre.jl")
+include("PC.jl")
 include("epi.jl")
 include("bSSFP.jl")
 include("spinEcho.jl")
+include("se_epi.jl")
 include("grase.jl")
 include("tse.jl")
 include("spi.jl")
 ```
 
 `gre.jl`, `epi.jl`, `bSSFP.jl`, and `spi.jl` use `_lobe_timing` from
-`gradient_design.jl`. `bSSFP.jl` also uses the GRE kernel and `rf_excitation`.
+`gradient_design.jl`. `bSSFP.jl` also uses `cartesian_line_order`, the GRE
+kernel, and `rf_excitation`. `PC.jl` uses the Cartesian ordering, excitation,
+and spoiled-GRE builders.
 The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
-`grase.jl` and `tse.jl` use the refocusing helpers from `spinEcho.jl`.
+`se_epi.jl`, `grase.jl`, and `tse.jl` use the refocusing helpers from
+`spinEcho.jl`.
 
 ## Public surfaces
 
 | File | Main functions |
 | --- | --- |
+| `cartesian.jl` | `cartesian_line_order` |
 | `excitation.jl` | `build_centered_sinc_pulse`, `slice_selective_sinc`, `rf_sinc` |
 | `gre.jl` | `gre_readout_kernel`, `sgre_base` |
+| `PC.jl` | `build_pc`, `build_pc_encoding_scans` |
 | `epi.jl` | `epi_readout_kernel`, `build_epi_navigator` |
 | `bSSFP.jl` | `bssfp_readout_kernel`, `build_cartesian_bssfp` |
 | `spinEcho.jl` | `build_refocusing_block`, `build_spin_echo` |
+| `se_epi.jl` | `build_se_epi` |
 | `grase.jl` | `build_grase` |
 | `tse.jl` | `build_tse` |
 | `spi.jl` | `spi_linear_order`, `spi_center_out_order`, `build_spi` |
@@ -58,6 +67,35 @@ positive navigator-line count, and its required `post_delay` separates the
 navigator from imaging. The final navigator line carries `AVG=1`; earlier lines
 carry `AVG=0`. The resulting sequence can be prepended once to an EPI
 acquisition or supplied once at sequence start to `build_grase` or `build_tse`.
+
+`build_se_epi` assembles every group from an EPI kernel as a separate spin-echo
+shot. It supports both single-shot and multishot kernels, derives one feasible
+common TE when none is requested, and either triggers every shot or appends a
+fixed post-shot delay.
+
+`build_cartesian_bssfp` can split one two-dimensional image across triggered
+heartbeats. Every heartbeat repeats the ADC-disabled flip-angle ramp before
+acquiring at most the requested number of linear or center-out phase-encoding
+lines. `cartesian_line_order` exposes the corresponding line grouping without
+constructing a sequence.
+
+`build_pc` constructs a two-point cine PC-GRE acquisition with beat-interleaved
+reference and velocity-encoded acquisition windows. It supports physiological
+triggering or continuous retrospective acquisition. The requested RR interval
+and cardiac-bin count determine the nearest whole-TR bin duration. Incomplete
+final line groups are padded with ADC-disabled dummy TRs, while `SET`, `PHS`,
+and `LIN` label velocity encoding, cardiac phase, and Cartesian line. Triggered
+mode ramps after every trigger; retrospective mode ramps only once at sequence
+start. Quadratic RF/receiver spoiling defaults to a 117-degree increment.
+
+`build_pc_encoding_scans` returns separate full-matrix `REF`, `X`, `Y`, and
+`Z` velocity-encoding scans. File identity supplies the encoding state, so
+these sequences omit `SET` labels. A single-phase scan also omits `PHS`, leaving
+only the Cartesian `LIN` labels.
+
+`bssfp_cardiac/generate.jl` generates 128×128 center-out and linear examples
+with eight lines per physiological trigger. It writes
+`bssfp_cardiac/cardiac.seq` and `bssfp_cardiac/linear.seq`.
 
 `gre_readout_kernel(...; rewind_m0=true)` appends a common-duration decoder so
 each Cartesian line returns all three gradient moments to zero. `build_tse`

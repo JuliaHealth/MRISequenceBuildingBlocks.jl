@@ -70,9 +70,9 @@ requirement to reproduce the original scripts or their APIs exactly.
 - [ ] Add a full spin-echo GRE acquisition train. `build_spin_echo` can build
   one encoding, but `logo_se_gre_sequence` also handles all phase-encoding
   lines, trigger and preparation insertion, and common echo timing.
-- [ ] Consider a generic Cartesian encoding-order helper only when the GRE,
-  bSSFP, and flow builders share a concrete need. Do not abstract this merely
-  because each currently contains a small loop.
+- [x] Add the reusable `cartesian_line_order` helper in `cartesian.jl` for
+  linear or center-out shot grouping. It is currently used by bSSFP and
+  available to future GRE and flow acquisition builders.
 
 ## bSSFP extensions
 
@@ -80,9 +80,9 @@ requirement to reproduce the original scripts or their APIs exactly.
   balanced one-dimensional profile, rotation by each spoke angle, golden-angle
   or supplied angle ordering, ADC-disabled ramp shots, and 180-degree RF/ADC
   phase alternation.
-- [ ] Allow the Cartesian bSSFP builder to take a supplied encoding order or
-  subset. The original builder also supported random ordering and retriggering
-  after a configurable number of lines.
+- [ ] Allow the Cartesian bSSFP builder to take an exact supplied encoding
+  order or subset. Linear and center-out ordering with retriggering after a
+  configurable number of lines are supported; random ordering remains absent.
 - [ ] Allow optional preparation constructors after each trigger and before the
   ramp. `preppulse_bSSFP.jl` demonstrates a custom RF/gradient preparation and
   spoiler, but its file I/O and top-level generation should not be migrated.
@@ -92,19 +92,20 @@ requirement to reproduce the original scripts or their APIs exactly.
 
 ## Phase contrast and flow encoding
 
-- [ ] Migrate reusable bipolar velocity-encoding design from `pc_gre.jl`:
+- [x] Migrate reusable bipolar velocity-encoding design from `pc_gre.jl`:
   - Venc-to-first-moment conversion;
   - minimum-time bipolar timing under gradient and slew limits;
-  - common-duration REF/RO/PE/PAR modules;
-  - explicit encoding-state representation.
-- [ ] Add a triggered two-dimensional cine PC-GRE builder with the useful
-  behavior from `make_pcgre`:
-  - package or beat interleaving;
+  - common-duration REF and VENC modules along RO, PE, or SS;
+  - explicit `SET` encoding state.
+- [x] Add a triggered or retrospective two-dimensional cine PC-GRE builder
+  with the useful beat-interleaved behavior from `make_pcgre`:
   - cardiac phase intervals quantized to complete TR units;
-  - configurable phases per trigger;
+  - a user-defined cardiac-bin count and approximate RR interval;
   - dummy lines where a final phase package is incomplete;
   - `SET` labels for velocity encoding and `PHS` labels for cardiac phase;
-  - continuous RF-spoiling state through triggers and packages.
+  - continuous RF-spoiling state through triggers and packages;
+  - optional full-matrix REF/X/Y/Z encodings returned as separate scans without
+    `SET` labels.
 - [ ] Add a retrospective Cartesian 4D-flow spoiled-GRE builder based on
   `make_4dflow_gre`:
   - four REF/RO/PE/PAR encodings;

@@ -228,12 +228,35 @@ function _combine_queues(seq, queues, outboard, threaded)
 end
 
 
+function _remove_empty_blocks(seq)
+    keep = [
+        !iszero(seq.DUR[block]) ||
+        any(gradient -> !iszero(dur(gradient)), seq.GR[:, block]) ||
+        any(rf -> !iszero(dur(rf)), seq.RF[:, block]) ||
+        seq.ADC[block].N > 0 ||
+        !isempty(seq.EXT[block])
+        for block in 1:length(seq)
+    ]
+    return Sequence(
+        seq.GR[:, keep],
+        seq.RF[:, keep],
+        seq.ADC[keep],
+        seq.DUR[keep],
+        seq.EXT[keep],
+        seq.DEF,
+    )
+end
+
+
 """
     materialize_gradients(seq; threaded=Base.Threads.nthreads() > 1)
 
 Return a new sequence with gradients clipped to block boundaries and overlapping
 gradient pieces combined. RF and ADC events are copied elementwise; extension and
 definition data are deep-copied. The input sequence is not modified.
+
+Blocks left completely empty after materialization are removed. Zero-duration
+blocks carrying an extension, such as a trigger, are retained.
 
 Gradients may begin before or end after their nominal source block, but their
 full waveform must remain within the sequence. Set `threaded=false` to force
@@ -244,7 +267,7 @@ function materialize_gradients(seq; threaded=Base.Threads.nthreads() > 1)
     queues, outboard = _collect_split_pieces(seq, block_edges, threaded)
     GR = _combine_queues(seq, queues, outboard, threaded)
 
-    return Sequence(
+    processed = Sequence(
         GR,
         copy.(seq.RF),
         copy.(seq.ADC),
@@ -252,4 +275,5 @@ function materialize_gradients(seq; threaded=Base.Threads.nthreads() > 1)
         deepcopy(seq.EXT),
         deepcopy(seq.DEF),
     )
+    return _remove_empty_blocks(processed)
 end

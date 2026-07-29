@@ -17,6 +17,7 @@ top-level execution, and easy to transplant.
 | File | Responsibility |
 | --- | --- |
 | `gradient_design.jl` | Shared minimum-time trapezoid timing. |
+| `cartesian.jl` | Reusable Cartesian line ordering and shot grouping. |
 | `excitation.jl` | Centered and custom slice-selective sinc excitations. |
 | `gre.jl` | Cartesian GRE and spoiled-GRE readout kernels. |
 | `epi.jl` | Partial-Fourier, multishot Cartesian EPI readout kernel. |
@@ -33,6 +34,7 @@ Use this include order when loading the directory directly:
 ```julia
 include("gradient_design.jl")
 include("utils.jl")
+include("cartesian.jl")
 include("preprocess.jl")
 include("excitation.jl")
 include("gre.jl")

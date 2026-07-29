@@ -121,10 +121,12 @@ end
 """
     build_cartesian_bssfp(excitation, readout_kernel, sys; kwargs...)
 
-Build a Cartesian bSSFP sequence consisting of an optional trigger wait, a
-linear flip-angle ramp, and the kernel's complete linear readout train. RF and
-ADC phase alternate by 180° on every shot. Ramp shots use the first Cartesian
-encoding with ADC sampling and acquisition labels disabled.
+Build a Cartesian bSSFP sequence for one image. The readout train can be split
+across heartbeats; every heartbeat consists of an optional trigger wait, a
+linear flip-angle ramp, and at most `lines_per_trigger` acquired lines. RF and
+ADC phase alternate by 180° on every TR and restart with the same phase at each
+heartbeat. Ramp shots use that heartbeat's first encoding with ADC sampling and
+acquisition labels disabled.
 
 `excitation` must be a sequence whose first block and first RF coil contain the
 pulse to repeat. Only that block is inserted; any excitation rephaser must be
@@ -135,6 +137,10 @@ represented through the readout kernel's fixed-area balance.
 - `post_trigger_delay=0.0`: Post-trigger wait duration, rounded up to the block
   raster. [`s`]
 - `n_ramp_shots=13`: Number of linear flip-angle preparation shots.
+- `lines_per_trigger=nothing`: Maximum acquired lines per heartbeat. `nothing`
+  puts the complete image after one trigger.
+- `view_order=:linear`: For a two-dimensional kernel, acquire phase-encoding
+  lines in `:linear` or `:center_out` order.
 """
 function build_cartesian_bssfp(
     excitation,
@@ -143,40 +149,77 @@ function build_cartesian_bssfp(
     trigger=:physio1,
     post_trigger_delay=0.0,
     n_ramp_shots=13,
+    lines_per_trigger=nothing,
+    view_order=:linear,
 )
     post_trigger_delay ≥ 0 || error("post_trigger_delay must be non-negative.")
     n_ramp_shots isa Integer && n_ramp_shots ≥ 1 ||
         error("n_ramp_shots must be a positive integer.")
     isempty(readout_kernel.encodings) && error("The readout train is empty.")
+    isnothing(lines_per_trigger) || (
+        lines_per_trigger isa Integer && lines_per_trigger ≥ 1
+    ) || error("lines_per_trigger must be a positive integer or nothing.")
+    view_order in (:linear, :center_out) ||
+        error("view_order must be :linear or :center_out.")
 
-    seq = Sequence(sys)
-    if !isnothing(trigger)
+    encodings = collect(readout_kernel.encodings)
+    n_lines = length(encodings)
+    lines_per_trigger = isnothing(lines_per_trigger) ?
+        n_lines : lines_per_trigger
+    if all(encoding -> length(encoding) == 1, encodings)
+        line_groups = cartesian_line_order(
+            only.(encodings),
+            lines_per_trigger;
+            view_order,
+        )
+        encoding_groups = [[(line,) for line in group] for group in line_groups]
+    else
+        view_order == :linear ||
+            error("center-out ordering requires a two-dimensional kernel.")
+        encoding_groups = [
+            encodings[first:min(first + lines_per_trigger - 1, end)]
+            for first in 1:lines_per_trigger:n_lines
+        ]
+    end
+    length(encoding_groups) > 1 && isnothing(trigger) &&
+        error("A trigger is required when the image spans multiple heartbeats.")
+
+    trigger_block = if isnothing(trigger)
+        nothing
+    else
         trigger_duration = ceil_to_raster(post_trigger_delay, sys.DUR_Δt)
-        seq += build_trigger(
+        build_trigger(
             trigger;
             duration=trigger_duration * u"s",
             sys,
         )
     end
 
-    first_encoding = first(readout_kernel.encodings)
-    ramp_readout = readout_kernel.readout(first_encoding...)
-    for block in eachindex(ramp_readout.ADC)
-        ramp_readout.ADC[block].N > 0 || continue
-        ramp_readout.ADC[block] = ADC(0, 0.0)
-        empty!(ramp_readout.EXT[block])
-    end
+    seq = Sequence(sys)
+    @addblock begin
+        for encoding_group in encoding_groups
+            isnothing(trigger_block) || (seq += trigger_block)
 
-    for shot in 1:n_ramp_shots
-        phase = cispi(shot - 1)
-        scale = shot / n_ramp_shots
-        seq += rf_excitation(excitation, scale * phase) + phase * ramp_readout
-    end
+            ramp_readout = readout_kernel.readout(first(encoding_group)...)
+            for block in eachindex(ramp_readout.ADC)
+                ramp_readout.ADC[block].N > 0 || continue
+                ramp_readout.ADC[block] = ADC(0, 0.0)
+                empty!(ramp_readout.EXT[block])
+            end
 
-    for (shot, encoding) in enumerate(readout_kernel.encodings)
-        phase = cispi(n_ramp_shots + shot - 1)
-        seq += rf_excitation(excitation, phase) +
-            phase * readout_kernel.readout(encoding...)
+            for shot in 1:n_ramp_shots
+                phase = cispi(shot - 1)
+                scale = shot / n_ramp_shots
+                seq += rf_excitation(excitation, scale * phase) +
+                    phase * ramp_readout
+            end
+
+            for (shot, encoding) in enumerate(encoding_group)
+                phase = cispi(n_ramp_shots + shot - 1)
+                seq += rf_excitation(excitation, phase) +
+                    phase * readout_kernel.readout(encoding...)
+            end
+        end
     end
 
     return seq
