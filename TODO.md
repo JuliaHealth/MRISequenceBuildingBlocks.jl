@@ -97,7 +97,8 @@ requirement to reproduce the original scripts or their APIs exactly.
   - minimum-time bipolar timing under gradient and slew limits;
   - common-duration REF and VENC modules along RO, PE, or SS;
   - explicit `SET` encoding state.
-- [x] Add a triggered or retrospective two-dimensional cine PC-GRE builder
+- [x] Add a triggered or retrospective two- or three-dimensional cine PC-GRE
+  builder
   with the useful beat-interleaved behavior from `make_pcgre`:
   - cardiac phase intervals quantized to complete TR units;
   - a user-defined cardiac-bin count and approximate RR interval;
@@ -105,7 +106,9 @@ requirement to reproduce the original scripts or their APIs exactly.
   - `SET` labels for velocity encoding and `PHS` labels for cardiac phase;
   - continuous RF-spoiling state through triggers and packages;
   - optional full-matrix REF/X/Y/Z encodings returned as separate scans without
-    `SET` labels.
+    `SET` labels;
+  - 3D slab-select thickness set by the partition FOV and simple linear filling
+    with `ky` varying fastest.
 - [ ] Add a retrospective Cartesian 4D-flow spoiled-GRE builder based on
   `make_4dflow_gre`:
   - four REF/RO/PE/PAR encodings;

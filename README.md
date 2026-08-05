@@ -79,19 +79,26 @@ acquiring at most the requested number of linear or center-out phase-encoding
 lines. `cartesian_line_order` exposes the corresponding line grouping without
 constructing a sequence.
 
-`build_pc` constructs a two-point cine PC-GRE acquisition with beat-interleaved
-reference and velocity-encoded acquisition windows. It supports physiological
-triggering or continuous retrospective acquisition. The requested RR interval
-and cardiac-bin count determine the nearest whole-TR bin duration. Incomplete
-final line groups are padded with ADC-disabled dummy TRs, while `SET`, `PHS`,
-and `LIN` label velocity encoding, cardiac phase, and Cartesian line. Triggered
-mode ramps after every trigger; retrospective mode ramps only once at sequence
-start. Quadratic RF/receiver spoiling defaults to a 117-degree increment.
+`build_pc` constructs a two- or three-dimensional two-point cine PC-GRE
+acquisition with beat-interleaved reference and velocity-encoded acquisition
+windows. It supports physiological triggering or continuous retrospective
+acquisition. In 3D, the partition FOV is also the slab-select thickness and
+linear filling traverses `ky` fastest, then `kz`. The requested RR interval and
+cardiac-bin count determine the nearest whole-TR bin duration. Incomplete final
+encoding groups are padded with ADC-disabled dummy TRs, while `SET`, `PHS`,
+`LIN`, and, in 3D, `PAR` label velocity encoding, cardiac phase, Cartesian line,
+and partition. Triggered mode ramps after every trigger; retrospective mode
+ramps only once at sequence start. Quadratic RF/receiver spoiling defaults to a
+117-degree increment.
 
-`build_pc_encoding_scans` returns separate full-matrix `REF`, `X`, `Y`, and
-`Z` velocity-encoding scans. File identity supplies the encoding state, so
-these sequences omit `SET` labels. A single-phase scan also omits `PHS`, leaving
-only the Cartesian `LIN` labels.
+`build_pc_encoding_scans` returns separate full-matrix 2D or 3D `REF`, `X`,
+`Y`, and `Z` velocity-encoding scans. File identity supplies the encoding state,
+so these sequences omit `SET` labels. A single-phase scan also omits `PHS`,
+leaving only the Cartesian `LIN` and, for 3D, `PAR` labels.
+
+`pc_3d/generate.jl` generates separate `REF`, `X`, `Y`, and `Z` examples with
+a 280×128×128 mm FOV, 2 mm isotropic resolution, two cardiac frames, and a
+250 cm/s Venc. It writes `pc_3d/ref.seq`, `x.seq`, `y.seq`, and `z.seq`.
 
 `bssfp_cardiac/generate.jl` generates 128×128 center-out and linear examples
 with eight lines per physiological trigger. It writes
