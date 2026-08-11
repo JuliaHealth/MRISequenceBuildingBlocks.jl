@@ -88,8 +88,16 @@ cardiac-bin count determine the nearest whole-TR bin duration. Incomplete final
 encoding groups are padded with ADC-disabled dummy TRs, while `SET`, `PHS`,
 `LIN`, and, in 3D, `PAR` label velocity encoding, cardiac phase, Cartesian line,
 and partition. Triggered mode ramps after every trigger; retrospective mode
-ramps only once at sequence start. Quadratic RF/receiver spoiling defaults to a
-117-degree increment.
+ramps only once at sequence start. Preparation consists of 13 ADC-disabled
+shots increasing linearly from `FA/13` through `FA`, followed by the nearest
+whole-TR duration to 300 ms of full-FA shots. `LeadTime` records the encoded
+time from sequence start to the first acquired TR. Quadratic RF/receiver
+spoiling defaults to a 117-degree increment.
+Callers may instead supply a gradient-free excitation sequence for a
+non-slice-selective hard-pulse acquisition.
+
+For a single cardiac phase, `RR` may be omitted. The builder then acquires each
+spatial encoding once without RR padding and does not write an `RR` definition.
 
 `build_pc_encoding_scans` returns separate full-matrix 2D or 3D `REF`, `X`,
 `Y`, and `Z` velocity-encoding scans. File identity supplies the encoding state,
@@ -99,6 +107,10 @@ leaving only the Cartesian `LIN` and, for 3D, `PAR` labels.
 `pc_3d/generate.jl` generates separate `REF`, `X`, `Y`, and `Z` examples with
 a 280×128×128 mm FOV, 2 mm isotropic resolution, two cardiac frames, and a
 250 cm/s Venc. It writes `pc_3d/ref.seq`, `x.seq`, `y.seq`, and `z.seq`.
+
+`pc_2d/generate.jl` generates separate single-phase `REF`, `X`, `Y`, and `Z`
+examples with a 184×140 mm FOV, 2 mm in-plane resolution, 10 mm slice, and a
+200 cm/s Venc. These scans omit RR padding and the `RR` definition.
 
 `bssfp_cardiac/generate.jl` generates 128×128 center-out and linear examples
 with eight lines per physiological trigger. It writes

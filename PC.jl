@@ -99,7 +99,7 @@ end
 
 
 """
-    build_pc(FOV, matrix, sys; venc, cardiac_bins, RR, BWpp, kwargs...)
+    build_pc(FOV, matrix, sys; venc, cardiac_bins, BWpp, RR=nothing, kwargs...)
 
 Build a beat-interleaved two- or three-dimensional cine PC-GRE sequence.
 `FOV=(readout, phase, slice_or_slab_thickness)` uses metres and `matrix` is
@@ -109,25 +109,33 @@ cardiac bin with a reference (`SET=0`) and one velocity-encoded (`SET=1`)
 acquisition on successive acquisition windows. `PHS` identifies the zero-based
 cardiac bin, `LIN` the phase-encoding line, and `PAR` the 3D partition.
 
-The requested `RR` is divided into `cardiac_bins`, then each bin is rounded to
-the nearest whole number of complete TRs. A final incomplete line group is
-filled with ADC-disabled dummy shots so every triggered acquisition has the
-same realized RR interval. RF spoiling remains continuous across triggers,
-encoding beats, line groups, and dummy shots.
+When `RR` is supplied, it is divided into `cardiac_bins`, then each bin is
+rounded to the nearest whole number of complete TRs. A final incomplete line
+group is filled with ADC-disabled dummy shots so every triggered acquisition
+has the same realized RR interval. For a single cardiac phase, `RR=nothing`
+acquires every spatial encoding once without RR padding. RF spoiling remains
+continuous across triggers, encoding beats, line groups, and dummy shots.
 
 # Required keywords
 - `venc`: Velocity aliasing limit. [`m/s`]
 - `cardiac_bins`: Number of cardiac phases per trigger.
-- `RR`: Approximate R-R interval. [`s`]
 - `BWpp`: Requested ADC bandwidth per acquired readout pixel. [`Hz/pixel`]
 
 # Optional keywords
 - `velocity_axis=:SS`: Velocity-encoding direction: `:RO`, `:PE`, or `:SS`.
 - `flip_angle=π/8`: Excitation flip angle. [`rad`]
 - `rf_bandwidth=nothing`: Slice-selective RF bandwidth. [`Hz`]
+- `excitation=nothing`: Optional gradient-free excitation sequence, such as a
+  non-slice-selective hard pulse. `nothing` builds the default slice-selective
+  sinc excitation.
 - `spoil_phase=4π`: Slice-direction spoiler phase across one slice or slab. [`rad`]
-- `n_ramp_shots=10`: ADC-disabled linear flip-angle ramp after each trigger,
-  or once at sequence start when `trigger_channel=nothing`.
+- `n_ramp_shots=13`: ADC-disabled linear flip-angle ramp from `FA/13` through
+  `FA` after each trigger, or once at sequence start when
+  `trigger_channel=nothing`.
+- `steady_state_duration=0.3`: Approximate duration of full-FA, ADC-disabled
+  shots following the ramp. [`s`]
+- `RR=nothing`: Approximate R-R interval. Required when `cardiac_bins > 1`;
+  omit it for an unpadded single-phase acquisition. [`s`]
 - `trigger_channel=:physio1`: Pulseq physiological trigger channel. Use
   `nothing` for a continuous retrospective acquisition.
 - `post_trigger_delay=0.0`: Delay included in the trigger block. [`s`]
@@ -141,13 +149,15 @@ function build_pc(
     sys;
     venc,
     cardiac_bins,
-    RR,
     BWpp,
+    RR=nothing,
     velocity_axis=:SS,
     flip_angle=π / 8,
     rf_bandwidth=nothing,
+    excitation=nothing,
     spoil_phase=4π,
-    n_ramp_shots=10,
+    n_ramp_shots=13,
+    steady_state_duration=0.3,
     trigger_channel=:physio1,
     post_trigger_delay=0.0,
     view_order=:linear,
@@ -164,7 +174,9 @@ function build_pc(
     venc > 0 || error("venc must be positive.")
     cardiac_bins isa Integer && cardiac_bins > 0 ||
         error("cardiac_bins must be a positive integer.")
-    RR > 0 || error("RR must be positive.")
+    isnothing(RR) || RR > 0 || error("RR must be positive.")
+    isnothing(RR) && cardiac_bins > 1 &&
+        error("RR is required when cardiac_bins is greater than one.")
     BWpp > 0 || error("BWpp must be positive.")
     velocity_axis in (:RO, :PE, :SS) ||
         error("velocity_axis must be :RO, :PE, or :SS.")
@@ -174,6 +186,8 @@ function build_pc(
     spoil_phase ≥ 0 || error("spoil_phase must be non-negative.")
     n_ramp_shots isa Integer && n_ramp_shots ≥ 0 ||
         error("n_ramp_shots must be a non-negative integer.")
+    steady_state_duration ≥ 0 ||
+        error("steady_state_duration must be non-negative.")
     post_trigger_delay ≥ 0 ||
         error("post_trigger_delay must be non-negative.")
     view_order in (:linear, :center_out) ||
@@ -183,16 +197,19 @@ function build_pc(
 
     FOV = Tuple(Float64.(FOV))
     matrix = Tuple(Int.(matrix))
-    excitation = slice_selective_sinc(
-        flip_angle,
-        FOV[3],
-        sys;
-        BW=rf_bandwidth,
-    )
-    fixed_area = ntuple(
-        axis -> _pc_gradient_area(excitation.GR[axis, 2]),
-        3,
-    )
+    fixed_area = if isnothing(excitation)
+        excitation = slice_selective_sinc(
+            flip_angle,
+            FOV[3],
+            sys;
+            BW=rf_bandwidth,
+        )
+        ntuple(axis -> _pc_gradient_area(excitation.GR[axis, 2]), 3)
+    else
+        any(is_GR_on, excitation.GR) && error(
+            "A supplied PC excitation must be gradient-free.")
+        (0.0, 0.0, 0.0)
+    end
     spoiler_area = spoil_phase / (2π * γ * FOV[3])
     readout_kernel = sgre_base(
         length(matrix) == 2 ? FOV[1:2] : FOV,
@@ -243,9 +260,11 @@ function build_pc(
         write_phs_label=write_phs_label,
     )
     TR = dur(representative)
-    lines_per_bin = max(round(Int, RR / (cardiac_bins * TR)), 1)
-    actual_phase_interval = lines_per_bin * TR
-    actual_RR = cardiac_bins * actual_phase_interval
+    steady_state_shots = steady_state_duration > 0 ?
+        max(round(Int, steady_state_duration / TR), 1) : 0
+    lines_per_bin = isnothing(RR) ? length(spatial_encodings) :
+        max(round(Int, RR / (cardiac_bins * TR)), 1)
+    actual_RR = isnothing(RR) ? nothing : cardiac_bins * lines_per_bin * TR
     encoding_groups = if length(matrix) == 2
         cartesian_line_order(spatial_encodings, lines_per_bin; view_order)
     else
@@ -262,13 +281,15 @@ function build_pc(
 
     sequence = Sequence(sys)
     rf_index = 1
+    lead_time = nothing
     @addblock begin
         for encodings in encoding_groups, encoding in eachindex(velocity_modules)
             isnothing(trigger) || (sequence += trigger)
 
-            if n_ramp_shots > 0 && (!isnothing(trigger) || rf_index == 1)
-                ramp_start = min(1.0, (3π / 180) / flip_angle)
-                for scale in range(ramp_start, 1.0; length=n_ramp_shots)
+            prepare = (n_ramp_shots > 0 || steady_state_shots > 0) &&
+                (!isnothing(trigger) || rf_index == 1)
+            if prepare
+                for ramp_shot in 1:n_ramp_shots
                     shot = _pc_shot(
                         excitation,
                         readouts[first(encodings)],
@@ -277,7 +298,22 @@ function build_pc(
                         1,
                         rf_index,
                         rf_spoil_increment;
-                        flip_scale=scale,
+                        flip_scale=ramp_shot / n_ramp_shots,
+                        write_set_label,
+                        write_phs_label,
+                    )
+                    sequence += _pc_disable_adc!(shot)
+                    rf_index = rf_index + 1
+                end
+                for _ in 1:steady_state_shots
+                    shot = _pc_shot(
+                        excitation,
+                        readouts[first(encodings)],
+                        reference_module,
+                        1,
+                        1,
+                        rf_index,
+                        rf_spoil_increment;
                         write_set_label,
                         write_phs_label,
                     )
@@ -288,6 +324,7 @@ function build_pc(
 
             for cardiac_bin in 1:cardiac_bins
                 for spatial_encoding in encodings
+                    isnothing(lead_time) && (lead_time = dur(sequence))
                     sequence += _pc_shot(
                         excitation,
                         readouts[spatial_encoding],
@@ -327,9 +364,10 @@ function build_pc(
     sequence.DEF["Ny"] = matrix[2]
     sequence.DEF["Nz"] = length(matrix) == 3 ? matrix[3] : 1
     sequence.DEF["TR"] = TR
-    sequence.DEF["RR"] = actual_RR
+    isnothing(actual_RR) || (sequence.DEF["RR"] = actual_RR)
     sequence.DEF["CardiacBins"] = cardiac_bins
     sequence.DEF["LinesPerCardiacBin"] = lines_per_bin
+    sequence.DEF["LeadTime"] = lead_time
     sequence.DEF["BandwidthPerPixel"] = actual_BWpp
     sequence.DEF["Venc"] = Float64(venc)
     sequence.DEF["VelocityEncodingAxis"] = String(
