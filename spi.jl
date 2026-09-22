@@ -148,9 +148,9 @@ orders are allowed.
 
 Every TR consists of a hard excitation, simultaneous 3D phase encoding, an FID
 ADC with the gradients off, and one combined rewind/spoiler gradient block. All
-pre-encoding and post-ADC gradients use timing designed for their respective
-largest vector moments over the supplied order. Each ADC block stores the
-zero-based Cartesian location as `LIN`, `PAR`, and `SLC`. The hard-pulse
+pre-encoding and post-ADC gradients use common timing designed from their
+respective worst-case moments over the supplied order. Each ADC block stores
+the zero-based Cartesian location as `LIN`, `PAR`, and `SLC`. The hard-pulse
 duration is the shortest even number of RF raster samples that satisfies
 `sys.B1`.
 
@@ -162,7 +162,11 @@ duration is the shortest even number of RF raster samples that satisfies
   raster. [`s`]
 - `TR=nothing`: Repetition time. `nothing` uses the minimum TR. [`s`]
 - `rf_spoil_increment=deg2rad(117)`: Quadratic RF-spoiling increment. [`rad`]
-- `spoil_phase=4π`: z-spoiler phase across one partition voxel. [`rad`]
+- `spoil_phase=4π`: Spoiler phase across one voxel. A scalar applies on z;
+  a three-entry collection applies on x, y, and z. [`rad`]
+- `gradient_limit_mode=:vector`: Use `:vector` to constrain the Euclidean norm
+  of simultaneous gradients or `:per_axis` to apply `sys.Gmax` and `sys.Smax`
+  independently on x, y, and z.
 """
 function build_spi(
     FOV,
@@ -175,6 +179,7 @@ function build_spi(
     TR=nothing,
     rf_spoil_increment=deg2rad(117),
     spoil_phase=4π,
+    gradient_limit_mode=:vector,
 )
     length(FOV) == 3 || error("SPI requires a three-dimensional FOV.")
     length(matrix) == 3 || error("SPI requires a three-dimensional matrix.")
@@ -188,7 +193,17 @@ function build_spi(
     adc_samples % 4 == 0 || error("adc_samples must be divisible by four.")
     adc_duration > 0 || error("adc_duration must be positive.")
     isnothing(TR) || TR > 0 || error("TR must be positive or nothing.")
-    spoil_phase >= 0 || error("spoil_phase must be non-negative.")
+    gradient_limit_mode in (:vector, :per_axis) ||
+        error("gradient_limit_mode must be :vector or :per_axis.")
+    spoil_phases = if spoil_phase isa Number
+        (0.0, 0.0, spoil_phase)
+    else
+        length(spoil_phase) == 3 ||
+            error("spoil_phase must be a scalar or have three entries.")
+        ntuple(axis -> spoil_phase[axis], 3)
+    end
+    all(phase -> phase >= 0, spoil_phases) ||
+        error("spoil_phase must be non-negative.")
 
     supplied_points = if kspace_order isa AbstractMatrix
         size(kspace_order, 2) == 3 ||
@@ -213,7 +228,9 @@ function build_spi(
     end
 
     moment(point) = ntuple(axis -> point[axis] / (γ * FOV[axis]), 3)
-    largest_moment = maximum(point -> sqrt(sum(abs2, moment(point))), points)
+    limiting_moment(values) = gradient_limit_mode === :vector ?
+        sqrt(sum(abs2, values)) : maximum(abs, values)
+    largest_moment = maximum(point -> limiting_moment(moment(point)), points)
     encode_flat, encode_rise = largest_moment > 0 ?
         _lobe_timing(largest_moment, sys) : (0.0, 0.0)
     adc_dwell = max(
@@ -221,13 +238,16 @@ function build_spi(
         1,
     ) * sys.ADC_Δt
 
-    voxel_z = FOV[3] / matrix[3]
-    spoiler_area = spoil_phase / (2π * γ * voxel_z)
+    voxel = ntuple(axis -> FOV[axis] / matrix[axis], 3)
+    spoiler_area = ntuple(
+        axis -> spoil_phases[axis] / (2π * γ * voxel[axis]),
+        3,
+    )
     rewind_moment(point) = let encoded = moment(point)
-        (-encoded[1], -encoded[2], -encoded[3] + spoiler_area)
+        ntuple(axis -> -encoded[axis] + spoiler_area[axis], 3)
     end
     largest_rewind_moment = maximum(
-        point -> sqrt(sum(abs2, rewind_moment(point))),
+        point -> limiting_moment(rewind_moment(point)),
         points,
     )
     rewind_flat, rewind_rise = largest_rewind_moment > 0 ?

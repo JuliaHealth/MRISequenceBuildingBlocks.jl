@@ -76,6 +76,9 @@ requirement to reproduce the original scripts or their APIs exactly.
 
 ## bSSFP extensions
 
+- [x] Add triggered or retrospective two- or three-dimensional Cartesian CINE
+  bSSFP using the PC-CINE cardiac-bin grouping, dummy padding, `PHS` labels,
+  and ramp plus steady-state preparation policy.
 - [ ] Add radial bSSFP, based on `radial_bSSFP.jl`. The reusable pieces are a
   balanced one-dimensional profile, rotation by each spoke angle, golden-angle
   or supplied angle ordering, ADC-disabled ramp shots, and 180-degree RF/ADC
@@ -125,6 +128,13 @@ requirement to reproduce the original scripts or their APIs exactly.
 
 ## SPI follow-up
 
+- [ ] Review the velocity-encoded SPI acquisition logic in
+  `dev/spi_venc_ref/generate.jl`, `dev/SPI_venc_sweep/generate.jl`, and
+  `dev/SPI_fullslew_combined_160/generate.jl` for a core builder: insert a
+  Venc bipolar or duration-matched REF block between RF and spatial encoding,
+  keep the REF/X/Y/Z shots at a common TR, and support the combined four-state
+  acquisition. The scripts also implement ADC-disabled preparation and
+  continuous RF/receiver spoiling across shots.
 - [ ] Improve `spi_center_out_order` at shell transitions. Strict spherical
   shell completion can leave disconnected cube-corner patches and produce large
   inter-shell jumps.

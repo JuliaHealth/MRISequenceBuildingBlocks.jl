@@ -1,5 +1,5 @@
 using KomaMRI
-using KomaMRI.PulseDesigner: build_trigger, make_trapezoid
+using KomaMRI.PulseDesigner: build_trigger, make_label, make_trapezoid
 using Unitful
 
 
@@ -223,4 +223,212 @@ function build_cartesian_bssfp(
     end
 
     return seq
+end
+
+
+function _bssfp_disable_adc!(seq)
+    for block in eachindex(seq.ADC)
+        seq.ADC[block].N > 0 || continue
+        seq.ADC[block] = ADC(0, 0.0)
+        empty!(seq.EXT[block])
+    end
+    return seq
+end
+
+function _bssfp_cine_shot(
+    excitation,
+    readout,
+    cardiac_bin,
+    rf_index;
+    flip_scale=1.0,
+)
+    phase = cispi(rf_index - 1)
+    shot = rf_excitation(excitation, flip_scale * phase) + phase * readout
+    phase_label = make_label(:SET, :PHS, cardiac_bin - 1)
+    for block in eachindex(shot.ADC)
+        shot.ADC[block].N > 0 || continue
+        push!(shot.EXT[block], phase_label)
+    end
+    return shot
+end
+
+
+"""
+    build_cine_bssfp(excitation, readout_kernel, sys; cardiac_bins, RR=nothing, kwargs...)
+
+Build a two- or three-dimensional Cartesian CINE bSSFP sequence. Every spatial
+encoding is acquired in every cardiac bin. The requested `RR` is divided into
+`cardiac_bins`, and each bin is rounded to the nearest whole number of complete
+TRs. An incomplete final encoding group is padded with ADC-disabled dummy TRs.
+`PHS` identifies the zero-based cardiac bin; the readout kernel supplies `LIN`
+and, for a three-dimensional acquisition, `PAR`.
+
+Preparation follows the CINE PC builders: a linear ADC-disabled flip-angle ramp
+is followed by approximately `steady_state_duration` of full-flip ADC-disabled
+shots. Triggered acquisitions repeat preparation after every trigger;
+retrospective acquisitions prepare only once at sequence start. RF and receiver
+phase alternate by 180 degrees continuously through preparation, acquisition,
+dummy shots, and triggers.
+
+`excitation` must be a sequence whose first block and first RF coil contain the
+pulse to repeat. Only that block is inserted; any excitation rephaser must be
+represented through the readout kernel's fixed-area balance.
+
+# Required keyword
+- `cardiac_bins`: Number of cardiac phases per R-R interval.
+
+# Optional keywords
+- `RR=nothing`: Approximate R-R interval. Required when `cardiac_bins > 1`;
+  omit it for an unpadded single-phase acquisition. [`s`]
+- `trigger_channel=:physio1`: Pulseq physiological trigger channel. Use
+  `nothing` for continuous retrospective acquisition.
+- `post_trigger_delay=0.0`: Delay included in the trigger block. [`s`]
+- `n_ramp_shots=13`: ADC-disabled linear flip-angle ramp from `FA/13` through
+  full flip angle.
+- `steady_state_duration=0.3`: Approximate full-flip preparation following the
+  ramp. [`s`]
+- `view_order=:linear`: Phase-encoding order, `:linear` or `:center_out` in 2D.
+  Three-dimensional filling is linear with `ky` varying fastest.
+"""
+function build_cine_bssfp(
+    excitation,
+    readout_kernel,
+    sys;
+    cardiac_bins,
+    RR=nothing,
+    trigger_channel=:physio1,
+    post_trigger_delay=0.0,
+    n_ramp_shots=13,
+    steady_state_duration=0.3,
+    view_order=:linear,
+)
+    cardiac_bins isa Integer && cardiac_bins > 0 ||
+        error("cardiac_bins must be a positive integer.")
+    isnothing(RR) || RR > 0 || error("RR must be positive.")
+    isnothing(RR) && cardiac_bins > 1 &&
+        error("RR is required when cardiac_bins is greater than one.")
+    post_trigger_delay >= 0 ||
+        error("post_trigger_delay must be non-negative.")
+    n_ramp_shots isa Integer && n_ramp_shots >= 0 ||
+        error("n_ramp_shots must be a non-negative integer.")
+    steady_state_duration >= 0 ||
+        error("steady_state_duration must be non-negative.")
+    view_order in (:linear, :center_out) ||
+        error("view_order must be :linear or :center_out.")
+
+    spatial_encodings = collect(readout_kernel.encodings)
+    isempty(spatial_encodings) && error("The readout train is empty.")
+    encoding_dims = length(first(spatial_encodings))
+    encoding_dims in (1, 2) ||
+        error("CINE bSSFP requires a two- or three-dimensional readout kernel.")
+    all(encoding -> length(encoding) == encoding_dims, spatial_encodings) ||
+        error("Readout encodings must have a consistent dimensionality.")
+    encoding_dims == 2 && view_order != :linear &&
+        error("three-dimensional CINE bSSFP currently supports only linear view ordering.")
+
+    readouts = Dict(
+        encoding => readout_kernel.readout(encoding...)
+        for encoding in spatial_encodings
+    )
+    representative = _bssfp_cine_shot(
+        excitation,
+        readouts[first(spatial_encodings)],
+        1,
+        1,
+    )
+    TR = dur(representative)
+    steady_state_shots = steady_state_duration > 0 ?
+        max(round(Int, steady_state_duration / TR), 1) : 0
+    lines_per_bin = isnothing(RR) ? length(spatial_encodings) :
+        max(round(Int, RR / (cardiac_bins * TR)), 1)
+    actual_RR = isnothing(RR) ? nothing : cardiac_bins * lines_per_bin * TR
+    encoding_groups = if encoding_dims == 1
+        line_groups = cartesian_line_order(
+            only.(spatial_encodings),
+            lines_per_bin;
+            view_order,
+        )
+        [[(line,) for line in group] for group in line_groups]
+    else
+        [
+            spatial_encodings[first:min(first + lines_per_bin - 1, end)]
+            for first in 1:lines_per_bin:length(spatial_encodings)
+        ]
+    end
+
+    trigger_duration = ceil_to_raster(post_trigger_delay, sys.DUR_Δt)
+    trigger = isnothing(trigger_channel) ? nothing : build_trigger(
+        trigger_channel;
+        duration=trigger_duration * u"s",
+        sys,
+    )
+
+    sequence = Sequence(sys)
+    rf_index = 1
+    lead_time = nothing
+    @addblock begin
+        for encodings in encoding_groups
+            isnothing(trigger) || (sequence += trigger)
+
+            prepare = (n_ramp_shots > 0 || steady_state_shots > 0) &&
+                (!isnothing(trigger) || rf_index == 1)
+            if prepare
+                for ramp_shot in 1:n_ramp_shots
+                    shot = _bssfp_cine_shot(
+                        excitation,
+                        readouts[first(encodings)],
+                        1,
+                        rf_index;
+                        flip_scale=ramp_shot / n_ramp_shots,
+                    )
+                    sequence += _bssfp_disable_adc!(shot)
+                    rf_index = rf_index + 1
+                end
+                for _ in 1:steady_state_shots
+                    shot = _bssfp_cine_shot(
+                        excitation,
+                        readouts[first(encodings)],
+                        1,
+                        rf_index,
+                    )
+                    sequence += _bssfp_disable_adc!(shot)
+                    rf_index = rf_index + 1
+                end
+            end
+
+            for cardiac_bin in 1:cardiac_bins
+                for spatial_encoding in encodings
+                    isnothing(lead_time) && (lead_time = dur(sequence))
+                    sequence += _bssfp_cine_shot(
+                        excitation,
+                        readouts[spatial_encoding],
+                        cardiac_bin,
+                        rf_index,
+                    )
+                    rf_index = rf_index + 1
+                end
+                for _ in (length(encodings) + 1):lines_per_bin
+                    shot = _bssfp_cine_shot(
+                        excitation,
+                        readouts[last(encodings)],
+                        cardiac_bin,
+                        rf_index,
+                    )
+                    sequence += _bssfp_disable_adc!(shot)
+                    rf_index = rf_index + 1
+                end
+            end
+        end
+    end
+
+    sequence.DEF["TR"] = TR
+    isnothing(actual_RR) || (sequence.DEF["RR"] = actual_RR)
+    sequence.DEF["CardiacBins"] = cardiac_bins
+    sequence.DEF["LinesPerCardiacBin"] = lines_per_bin
+    sequence.DEF["LeadTime"] = lead_time
+    isnothing(trigger_channel) ||
+        (sequence.DEF["TriggerChannel"] = String(trigger_channel))
+
+    @info "CINE bSSFP timing" requested_RR=RR actual_RR TR cardiac_bins lines_per_bin
+    return sequence
 end

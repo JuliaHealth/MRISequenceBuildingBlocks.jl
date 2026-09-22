@@ -5,6 +5,9 @@ is intentionally not a Julia package yet. Numeric design calculations use SI
 units internally; Unitful quantities are added only when calling KomaMRI pulse
 constructors.
 
+The root `.jl` files are the sequence-building source. Example generators,
+scanner files, and generated Pulseq sequences are under `dev/`.
+
 ## Suggested include order
 
 ```julia
@@ -41,7 +44,7 @@ The public EPI kernel uses `materialize_gradients` from `preprocess.jl`.
 | `gre.jl` | `gre_readout_kernel`, `sgre_base` |
 | `PC.jl` | `build_pc`, `build_pc_encoding_scans` |
 | `epi.jl` | `epi_readout_kernel`, `build_epi_navigator` |
-| `bSSFP.jl` | `bssfp_readout_kernel`, `build_cartesian_bssfp` |
+| `bSSFP.jl` | `bssfp_readout_kernel`, `build_cartesian_bssfp`, `build_cine_bssfp` |
 | `spinEcho.jl` | `build_refocusing_block`, `build_spin_echo` |
 | `se_epi.jl` | `build_se_epi` |
 | `grase.jl` | `build_grase` |
@@ -79,6 +82,13 @@ acquiring at most the requested number of linear or center-out phase-encoding
 lines. `cartesian_line_order` exposes the corresponding line grouping without
 constructing a sequence.
 
+`build_cine_bssfp` applies the PC-CINE acquisition schedule to the balanced
+Cartesian kernel. It acquires every spatial encoding in every cardiac bin,
+quantizes each bin to complete bSSFP TRs, and pads incomplete final encoding
+groups with ADC-disabled TRs. Triggered use repeats the linear flip-angle and
+steady-state preparation after every trigger; retrospective use prepares once
+at sequence start. `PHS`, `LIN`, and, in 3D, `PAR` identify the acquired data.
+
 `build_pc` constructs a two- or three-dimensional two-point cine PC-GRE
 acquisition with beat-interleaved reference and velocity-encoded acquisition
 windows. It supports physiological triggering or continuous retrospective
@@ -104,17 +114,39 @@ spatial encoding once without RR padding and does not write an `RR` definition.
 so these sequences omit `SET` labels. A single-phase scan also omits `PHS`,
 leaving only the Cartesian `LIN` and, for 3D, `PAR` labels.
 
-`pc_3d/generate.jl` generates separate `REF`, `X`, `Y`, and `Z` examples with
+`dev/pc_3d/generate.jl` generates separate `REF`, `X`, `Y`, and `Z` examples with
 a 280×128×128 mm FOV, 2 mm isotropic resolution, two cardiac frames, and a
-250 cm/s Venc. It writes `pc_3d/ref.seq`, `x.seq`, `y.seq`, and `z.seq`.
+250 cm/s Venc. It writes `dev/pc_3d/ref.seq`, `x.seq`, `y.seq`, and `z.seq`.
 
-`pc_2d/generate.jl` generates separate single-phase `REF`, `X`, `Y`, and `Z`
+`dev/pc_2d/generate.jl` generates separate single-phase `REF`, `X`, `Y`, and `Z`
 examples with a 184×140 mm FOV, 2 mm in-plane resolution, 10 mm slice, and a
 200 cm/s Venc. These scans omit RR padding and the `RR` definition.
 
-`bssfp_cardiac/generate.jl` generates 128×128 center-out and linear examples
+`dev/bssfp_cardiac/generate.jl` generates 128×128 center-out and linear examples
 with eight lines per physiological trigger. It writes
-`bssfp_cardiac/cardiac.seq` and `bssfp_cardiac/linear.seq`.
+`dev/bssfp_cardiac/cardiac.seq` and `dev/bssfp_cardiac/linear.seq`.
+
+`dev/cine_bssfp_2d/generate.jl` generates a retrospective 10-phase 2D CINE bSSFP
+example with a 256×256 mm FOV and 128×128 matrix. It writes
+`dev/cine_bssfp_2d/cine.seq`.
+`dev/cine_bssfp_2d/generate_oblique.jl` is the corresponding oblique-slice variant:
+the script accepts a scanner-coordinate slice normal and a signed shift along
+that normal, chooses a right-handed in-plane basis, and writes
+`dev/cine_bssfp_2d/cine_oblique.seq`.
+`dev/cine_bssfp_2d/generate_oblique_random.jl` uses one seeded random permutation
+of the complete phase-encoding matrix for every cardiac phase and writes
+`dev/cine_bssfp_2d/cine_oblique_rnd.seq`.
+
+`dev/cine_bssfp_3d/generate_oblique_random.jl` extends that acquisition to a
+128×128×50 mm encoding FOV and 64×64×10 matrix. It uses a 40 mm slab-select RF
+and one seeded random permutation of all `(LIN, PAR)` pairs for every cardiac
+phase, writing `dev/cine_bssfp_3d/cine_oblique_3d_rnd.seq`.
+`dev/cine_bssfp_3d/generate_oblique_linear.jl` holds the same geometry and timing
+fixed, uses a TBWP-12 slab pulse, and fills `LIN` fastest and then `PAR`, writing
+`dev/cine_bssfp_3d/cine_oblique_3d_linear.seq`.
+`dev/cine_bssfp_3d/generate_oblique_14.jl` restores the original TBWP-4 slab pulse
+and expands only the encoded slab to 70 mm and 14 partitions, writing
+`dev/cine_bssfp_3d/cine_oblique_14.seq`.
 
 `gre_readout_kernel(...; rewind_m0=true)` appends a common-duration decoder so
 each Cartesian line returns all three gradient moments to zero. `build_tse`
@@ -141,6 +173,10 @@ Callers pass centered Cartesian indices. Even dimensions use
 
 SPI's multi-sample FID remains one ADC event. Pulseq labels apply to that whole
 event, not to individual ADC dwell samples.
+`build_spi` applies a scalar spoiler phase on z for backward compatibility; a
+three-entry value applies simultaneous per-voxel spoiler phases on x, y, and z.
+Its `gradient_limit_mode` can constrain simultaneous gradients by their vector
+norm or apply scanner gradient and slew limits independently to each axis.
 
 ## Important boundaries
 

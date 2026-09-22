@@ -21,7 +21,7 @@ top-level execution, and easy to transplant.
 | `excitation.jl` | Centered and custom slice-selective sinc excitations. |
 | `gre.jl` | Cartesian GRE and spoiled-GRE readout kernels. |
 | `epi.jl` | Partial-Fourier, multishot Cartesian EPI readout kernel. |
-| `bSSFP.jl` | Balanced Cartesian readout kernel and full linear bSSFP train. |
+| `bSSFP.jl` | Balanced Cartesian readout kernel, full train, and CINE assembly. |
 | `spinEcho.jl` | Refocusing block and readout-independent spin-echo assembly. |
 | `grase.jl` | Minimum-time GRASE assembly from refocused EPI echo groups. |
 | `tse.jl` | Linear or center-out turbo spin-echo acquisition assembly. |
@@ -117,6 +117,9 @@ scanner amplitude and slew limits. In particular:
 - a centered readout must put `kx=0` at its temporal center;
 - bSSFP must have zero net gradient moment over a TR and place k-space center
   halfway between adjacent RF centers when full readout is used;
+- CINE bSSFP must acquire every spatial encoding in every cardiac bin, preserve
+  continuous 180-degree RF/receiver phase alternation, and use ADC-disabled
+  dummy TRs for incomplete final encoding groups;
 - partial Fourier must retain the k-space-center sample;
 - spin-echo timing is measured between RF centers and the actual readout-center
   sample;
