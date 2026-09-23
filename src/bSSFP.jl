@@ -1,5 +1,6 @@
 using KomaMRI
 using KomaMRI.PulseDesigner: build_trigger, make_label, make_trapezoid
+using LinearAlgebra: cross, dot, normalize
 using Unitful
 
 
@@ -289,6 +290,9 @@ represented through the readout kernel's fixed-area balance.
   ramp. [`s`]
 - `view_order=:linear`: Phase-encoding order, `:linear` or `:center_out` in 2D.
   Three-dimensional filling is linear with `ky` varying fastest.
+- `encoding_order=nothing`: Exact acquisition order as a complete permutation of
+  the readout kernel's centered encoding tuples. Used in every cardiac bin;
+  requires `view_order=:linear`.
 """
 function build_cine_bssfp(
     excitation,
@@ -301,6 +305,7 @@ function build_cine_bssfp(
     n_ramp_shots=13,
     steady_state_duration=0.3,
     view_order=:linear,
+    encoding_order=nothing,
 )
     cardiac_bins isa Integer && cardiac_bins > 0 ||
         error("cardiac_bins must be a positive integer.")
@@ -315,9 +320,18 @@ function build_cine_bssfp(
         error("steady_state_duration must be non-negative.")
     view_order in (:linear, :center_out) ||
         error("view_order must be :linear or :center_out.")
+    isnothing(encoding_order) || view_order == :linear ||
+        error("view_order must be :linear when encoding_order is supplied.")
 
-    spatial_encodings = collect(readout_kernel.encodings)
+    kernel_encodings = collect(readout_kernel.encodings)
+    spatial_encodings = isnothing(encoding_order) ?
+        kernel_encodings : collect(encoding_order)
     isempty(spatial_encodings) && error("The readout train is empty.")
+    if !isnothing(encoding_order)
+        length(spatial_encodings) == length(kernel_encodings) &&
+            Set(spatial_encodings) == Set(kernel_encodings) ||
+            error("encoding_order must be a complete permutation of the readout encodings.")
+    end
     encoding_dims = length(first(spatial_encodings))
     encoding_dims in (1, 2) ||
         error("CINE bSSFP requires a two- or three-dimensional readout kernel.")
@@ -430,5 +444,65 @@ function build_cine_bssfp(
         (sequence.DEF["TriggerChannel"] = String(trigger_channel))
 
     @info "CINE bSSFP timing" requested_RR=RR actual_RR TR cardiac_bins lines_per_bin
+    return sequence
+end
+
+
+"""
+    build_cine_bssfp(FOV, matrix, sys, BWpp; excitation, kwargs...)
+
+Build a two- or three-dimensional Cartesian CINE bSSFP sequence from an
+already-designed slice- or slab-selective excitation. `FOV` contains the
+readout, phase, and encoded slice/slab dimensions in metres. The excitation's
+second-block z gradient is included in the balanced readout design.
+
+`slice_normal` is a scanner-coordinate normal; `slice_shift` is a signed
+distance in metres along that normal. The sequence is rotated from a
+right-handed logical readout/phase/slice basis into scanner coordinates. Other
+keywords, including `encoding_order`, pass to the lower-level cine builder.
+The supplied excitation is not modified.
+"""
+function build_cine_bssfp(
+    FOV,
+    matrix,
+    sys,
+    BWpp;
+    excitation,
+    slice_normal=(0.0, 0.0, 1.0),
+    slice_shift=0.0,
+    kwargs...,
+)
+    length(FOV) == 3 || error("FOV must have readout, phase, and slice dimensions.")
+    length(matrix) in (2, 3) || error("matrix must be two- or three-dimensional.")
+    length(slice_normal) == 3 || error("slice_normal must have three components.")
+    length(excitation) >= 2 || error("excitation must include a slice rephaser block.")
+
+    normal = collect(Float64.(slice_normal))
+    all(isfinite, normal) && sum(abs2, normal) > 0 ||
+        error("slice_normal must be a finite, nonzero vector.")
+    normal = normalize(normal)
+    reference_axis = zeros(3)
+    reference_axis[argmin(abs.(normal))] = 1.0
+    readout_direction = normalize(reference_axis - dot(reference_axis, normal) * normal)
+    phase_direction = cross(normal, readout_direction)
+    orientation = hcat(readout_direction, phase_direction, normal)
+
+    shifted_excitation = deepcopy(excitation)
+    shifted_excitation.RF[1].Δf += γ * shifted_excitation.GR[3, 1].A * slice_shift
+    slice_rephaser_area = area(shifted_excitation.GR[3, 2])
+    readout_FOV = length(matrix) == 2 ? FOV[1:2] : FOV
+    readout = bssfp_readout_kernel(readout_FOV, matrix, sys, BWpp;
+        fixed_area=(0.0, 0.0, slice_rephaser_area))
+    sequence = orientation * build_cine_bssfp(shifted_excitation, readout, sys; kwargs...)
+
+    sequence.DEF["FOV"] = collect(FOV)
+    sequence.DEF["Nx"] = matrix[1]
+    sequence.DEF["Ny"] = matrix[2]
+    sequence.DEF["Nz"] = length(matrix) == 3 ? matrix[3] : 1
+    sequence.DEF["BandwidthPerPixel"] = BWpp
+    sequence.DEF["SliceNormal"] = normal
+    sequence.DEF["SliceShift"] = slice_shift
+    sequence.DEF["ReadoutDirection"] = readout_direction
+    sequence.DEF["PhaseDirection"] = phase_direction
     return sequence
 end
