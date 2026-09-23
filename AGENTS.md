@@ -1,50 +1,37 @@
-# Migrated sequence-builder guidance
+# Sequence-builder guidance
 
 ## Purpose
 
-This directory is a clean staging area for high-level MRI sequence construction
-on top of KomaMRI. KomaMRI owns event and sequence mechanics; this code should
+This package provides high-level MRI sequence construction on top of KomaMRI.
+KomaMRI owns event and sequence mechanics; this code should
 express recognizable sequence-design concepts such as Cartesian readouts,
 balanced rewinders, spin-echo timing, preparation modules, and acquisition
 ordering.
 
-The directory is intentionally not a Julia package. It is expected to move into
-a separate high-level package later, so keep it self-contained, free of
-top-level execution, and easy to transplant.
+Package source lives in `src/`; recipes and generated sequences live in
+`examples/`. Keep library files free of top-level sequence generation.
 
 ## Current contents
 
-| File | Responsibility |
+| File in `src/` | Responsibility |
 | --- | --- |
 | `gradient_design.jl` | Shared minimum-time trapezoid timing. |
 | `cartesian.jl` | Reusable Cartesian line ordering and shot grouping. |
 | `excitation.jl` | Centered and custom slice-selective sinc excitations. |
 | `gre.jl` | Cartesian GRE and spoiled-GRE readout kernels. |
+| `PC.jl` | Two- and three-dimensional cine PC-GRE assembly. |
 | `epi.jl` | Partial-Fourier, multishot Cartesian EPI readout kernel. |
 | `bSSFP.jl` | Balanced Cartesian readout kernel, full train, and CINE assembly. |
 | `spinEcho.jl` | Refocusing block and readout-independent spin-echo assembly. |
+| `se_epi.jl` | Complete single- or multishot spin-echo EPI assembly. |
 | `grase.jl` | Minimum-time GRASE assembly from refocused EPI echo groups. |
 | `tse.jl` | Linear or center-out turbo spin-echo acquisition assembly. |
 | `spi.jl` | Three-dimensional SPI builder and Cartesian sampling orders. |
 | `preprocess.jl` | Materialization of gradients that cross block boundaries. |
 | `utils.jl` | Small sequence-composition utilities. |
 
-Use this include order when loading the directory directly:
-
-```julia
-include("gradient_design.jl")
-include("utils.jl")
-include("cartesian.jl")
-include("preprocess.jl")
-include("excitation.jl")
-include("gre.jl")
-include("epi.jl")
-include("bSSFP.jl")
-include("spinEcho.jl")
-include("grase.jl")
-include("tse.jl")
-include("spi.jl")
-```
+`src/MRISequenceBuildingBlocks.jl` includes these files in dependency order.
+Package users should load the module with `using MRISequenceBuildingBlocks`.
 
 ## Design philosophy
 
@@ -155,7 +142,7 @@ one event.
 
 ## Editing workflow
 
-1. Read `README.md` and `TODO.md` before changing public behavior.
+1. Read the relevant public docstring and `TODO.md` before changing behavior.
 2. When recovering functionality from the original project, inspect the live
    source working copy, including uncommitted and untracked files. Use it as
    design evidence, not as code to copy wholesale.
@@ -175,8 +162,8 @@ reload edited files with Revise or `include` as appropriate.
 - Do not add generated `.seq` files, plotting scripts, scanner-specific recipes,
   or top-level sequence generation to these library files.
 - Gropt-based implementations are outside this migration.
-- The original tests are not migration inputs; add validation in the eventual
-  package around the clean public behavior.
+- The original tests are not migration inputs; add validation under `test/`
+  around the clean public behavior when requested.
 - Phantom conversion and Koma simulation setup are adjacent workflows, not
   sequence-construction primitives.
 - Avoid accumulating large diagnostic dictionaries in `seq.DEF`.

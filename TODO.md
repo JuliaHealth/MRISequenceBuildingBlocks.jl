@@ -1,8 +1,8 @@
 # Migration TODO
 
-This inventory compares `migrated/` with the live project source, including its
-uncommitted and untracked Julia files. Gropt code, tests, generated sequence
-files, and historical output directories are intentionally excluded.
+This inventory compares the package builders in `src/` with the example
+scripts in `examples/`. Gropt code, tests, generated sequence files, and
+historical output directories are intentionally excluded.
 
 The items below describe missing behavior and useful ideas. They are not a
 requirement to reproduce the original scripts or their APIs exactly.
@@ -45,7 +45,7 @@ requirement to reproduce the original scripts or their APIs exactly.
     acquisition rather than duplicated formulas.
 - [ ] Add a complete gradient-echo EPI builder. `logo_epi.jl` combines trigger,
   fat saturation, navigator, custom excitation, and multishot EPI, while
-  `migrated/epi.jl` currently supplies only the readout kernel.
+  `src/epi.jl` currently supplies only the readout kernel.
 - [ ] Add a complete spin-echo EPI acquisition builder around
   `build_spin_echo` with:
   - all-shot assembly;
@@ -79,13 +79,16 @@ requirement to reproduce the original scripts or their APIs exactly.
 - [x] Add triggered or retrospective two- or three-dimensional Cartesian CINE
   bSSFP using the PC-CINE cardiac-bin grouping, dummy padding, `PHS` labels,
   and ramp plus steady-state preparation policy.
+- [x] Add exact full-matrix spatial ordering and an oblique 2D/3D CINE bSSFP
+  constructor around a supplied slice- or slab-selective excitation.
 - [ ] Add radial bSSFP, based on `radial_bSSFP.jl`. The reusable pieces are a
   balanced one-dimensional profile, rotation by each spoke angle, golden-angle
   or supplied angle ordering, ADC-disabled ramp shots, and 180-degree RF/ADC
   phase alternation.
-- [ ] Allow the Cartesian bSSFP builder to take an exact supplied encoding
-  order or subset. Linear and center-out ordering with retriggering after a
-  configurable number of lines are supported; random ordering remains absent.
+- [ ] Allow the single-image `build_cartesian_bssfp` builder to take an exact
+  supplied encoding order or subset. Linear and center-out ordering with
+  retriggering after a configurable number of lines are supported; random
+  ordering remains absent there. CINE accepts a complete supplied order.
 - [ ] Allow optional preparation constructors after each trigger and before the
   ramp. `preppulse_bSSFP.jl` demonstrates a custom RF/gradient preparation and
   spoiler, but its file I/O and top-level generation should not be migrated.
@@ -129,8 +132,8 @@ requirement to reproduce the original scripts or their APIs exactly.
 ## SPI follow-up
 
 - [ ] Review the velocity-encoded SPI acquisition logic in
-  `dev/spi_venc_ref/generate.jl`, `dev/SPI_venc_sweep/generate.jl`, and
-  `dev/SPI_fullslew_combined_160/generate.jl` for a core builder: insert a
+  `examples/spi_venc_ref/generate.jl`, `examples/SPI_venc_sweep/generate.jl`, and
+  `examples/SPI_fullslew_combined_160/generate.jl` for a core builder: insert a
   Venc bipolar or duration-matched REF block between RF and spatial encoding,
   keep the REF/X/Y/Z shots at a common TR, and support the combined four-state
   acquisition. The scripts also implement ADC-disabled preparation and
@@ -203,4 +206,4 @@ requirement to reproduce the original scripts or their APIs exactly.
 - Gropt examples and `pc_bssfp_gropt2.jl` remain out of scope.
 - Top-level scripts such as `logo_gre_single.jl`, `logo_se_epi_single.jl`,
   `logo_se_readout.jl`, and `stenotic_4dflow_presets.jl` are sources of sequence
-  ideas and acceptance cases, not APIs to copy into `migrated/`.
+  ideas and acceptance cases, not APIs to copy into `src/`.
