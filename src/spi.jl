@@ -1,9 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner:
-    build_adc, build_block_pulse, build_delay, make_label, make_trapezoid
-using Unitful
-
-
 _spi_axis_range(N) = -(N ÷ 2):(N - 1 - N ÷ 2)
 
 
@@ -152,7 +146,7 @@ pre-encoding and post-ADC gradients use common timing designed from their
 respective worst-case moments over the supplied order. Each ADC block stores
 the zero-based Cartesian location as `LIN`, `PAR`, and `SLC`. The hard-pulse
 duration is the shortest even number of RF raster samples that satisfies
-`sys.B1`.
+`sys.limits.B1`.
 
 # Keywords
 - `flip_angle=deg2rad(13)`: Hard-pulse flip angle. [`rad`]
@@ -165,7 +159,7 @@ duration is the shortest even number of RF raster samples that satisfies
 - `spoil_phase=4π`: Spoiler phase across one voxel. A scalar applies on z;
   a three-entry collection applies on x, y, and z. [`rad`]
 - `gradient_limit_mode=:vector`: Use `:vector` to constrain the Euclidean norm
-  of simultaneous gradients or `:per_axis` to apply `sys.Gmax` and `sys.Smax`
+  of simultaneous gradients or `:per_axis` to apply `sys.limits.Gmax` and `sys.limits.Smax`
   independently on x, y, and z.
 """
 function build_spi(
@@ -181,13 +175,17 @@ function build_spi(
     spoil_phase=4π,
     gradient_limit_mode=:vector,
 )
+    FOV = to_SI.(FOV)
+    flip_angle, adc_duration, TR, rf_spoil_increment =
+        to_SI.((flip_angle, adc_duration, TR, rf_spoil_increment))
+    spoil_phase = to_SI.(spoil_phase)
     length(FOV) == 3 || error("SPI requires a three-dimensional FOV.")
     length(matrix) == 3 || error("SPI requires a three-dimensional matrix.")
     all(value -> value > 0, FOV) || error("FOV dimensions must be positive.")
     all(N -> N > 0 && isinteger(N), matrix) ||
         error("Matrix dimensions must be positive integers.")
     flip_angle > 0 || error("flip_angle must be positive.")
-    sys.B1 > 0 || error("sys.B1 must be positive.")
+    sys.limits.B1 > 0 || error("sys.limits.B1 must be positive.")
     adc_samples > 0 && isinteger(adc_samples) ||
         error("adc_samples must be a positive integer.")
     adc_samples % 4 == 0 || error("adc_samples must be divisible by four.")
@@ -234,9 +232,9 @@ function build_spi(
     encode_flat, encode_rise = largest_moment > 0 ?
         _lobe_timing(largest_moment, sys) : (0.0, 0.0)
     adc_dwell = max(
-        round(Int, adc_duration / adc_samples / sys.ADC_Δt),
+        round(Int, adc_duration / adc_samples / sys.limits.ADC_Δt),
         1,
-    ) * sys.ADC_Δt
+    ) * sys.limits.ADC_Δt
 
     voxel = ntuple(axis -> FOV[axis] / matrix[axis], 3)
     spoiler_area = ntuple(
@@ -252,25 +250,25 @@ function build_spi(
     )
     rewind_flat, rewind_rise = largest_rewind_moment > 0 ?
         _lobe_timing(largest_rewind_moment, sys) : (0.0, 0.0)
-    minimum_rf_duration = isfinite(sys.B1) ?
-        flip_angle / (2π * γ * sys.B1) : sys.RF_Δt
+    minimum_rf_duration = isfinite(sys.limits.B1) ?
+        flip_angle / (2π * γ * sys.limits.B1) : sys.limits.RF_Δt
     # An even number of RF samples keeps the half-duration Pulseq center offset
     # on the RF raster.
     block_pulse_duration = max(
-        ceil_to_raster(minimum_rf_duration, 2sys.RF_Δt),
-        2sys.RF_Δt,
+        ceil_to_raster(minimum_rf_duration, 2sys.limits.RF_Δt),
+        2sys.limits.RF_Δt,
     )
     # Pulseq stores a block pulse as two center samples. Offset the Koma scalar
     # event so its serialized waveform still begins after the RF dead time.
-    block_pulse_delay = sys.RF_dead_time + block_pulse_duration / 2
+    block_pulse_delay = sys.limits.RF_dead_time + block_pulse_duration / 2
 
     function gradient_block(maximum_moment, flat_time, rise_time)
         amplitude = maximum_moment / (flat_time + rise_time)
         gradient = make_trapezoid(;
-            amplitude=amplitude * u"T/m",
-            flat_time=flat_time * u"s",
-            rise_time=rise_time * u"s",
-            fall_time=rise_time * u"s",
+            amplitude=amplitude * γ,
+            flat_time=flat_time,
+            rise_time=rise_time,
+            fall_time=rise_time,
             sys,
         )
         block = Sequence(sys)
@@ -279,15 +277,15 @@ function build_spi(
     end
 
     excitation = build_block_pulse(
-        flip_angle * u"rad";
-        duration=block_pulse_duration * u"s",
-        delay=block_pulse_delay * u"s",
+        flip_angle;
+        duration=block_pulse_duration,
+        delay=block_pulse_delay,
         use=Excitation(),
         sys,
     )
     encoding = largest_moment > 0 ?
         gradient_block(largest_moment, encode_flat, encode_rise) : nothing
-    adc = build_adc(adc_samples, adc_dwell * u"s"; sys)
+    adc = build_adc(adc_samples, adc_dwell; sys)
     rewind = largest_rewind_moment > 0 ?
         gradient_block(largest_rewind_moment, rewind_flat, rewind_rise) : nothing
 
@@ -297,13 +295,13 @@ function build_spi(
     padding = if isnothing(TR)
         0.0
     else
-        target_TR = ceil_to_raster(TR, sys.DUR_Δt)
+        target_TR = ceil_to_raster(TR, sys.limits.DUR_Δt)
         padding = target_TR - minimum_TR
         padding >= -1e-12 || error(
             "TR=$(TR) s is shorter than the minimum TR=$(minimum_TR) s.")
         padding
     end
-    padding_block = padding > 1e-12 ? build_delay(padding * u"s"; sys) : nothing
+    padding_block = padding > 1e-12 ? build_delay(padding; sys) : nothing
 
     sequence = Sequence(sys)
     @addblock for (shot, point) in enumerate(points)

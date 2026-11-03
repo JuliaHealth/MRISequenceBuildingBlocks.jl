@@ -1,8 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: build_trigger, make_delay
-using Unitful
-
-
 function _tse_view_order(Ny, echo_train_length, view_order, center_echo)
     n_shots = Ny ÷ echo_train_length
     lines = collect(-(Ny ÷ 2):(Ny - 1 - Ny ÷ 2))
@@ -77,6 +72,8 @@ function build_tse(
     refocusing_time_bw_product=4,
     refocusing_apodization=0.46,
 )
+    slice_thickness, TR, crusher_phase, refocusing_phase, refocusing_bandwidth =
+        to_SI.((slice_thickness, TR, crusher_phase, refocusing_phase, refocusing_bandwidth))
     for property in (:readout, :center_time, :FOV, :matrix, :rewind_m0)
         hasproperty(line_kernel, property) ||
             error("The GRE line kernel must provide `$property`.")
@@ -97,7 +94,7 @@ function build_tse(
     isnothing(trigger_channel) == isnothing(TR) &&
         error("Provide exactly one of trigger_channel or TR.")
     isnothing(TR) || TR > 0 || error("TR must be positive.")
-    actual_TR = isnothing(TR) ? nothing : ceil_to_raster(TR, sys.DUR_Δt)
+    actual_TR = isnothing(TR) ? nothing : ceil_to_raster(TR, sys.limits.DUR_Δt)
     trigger = isnothing(trigger_channel) ? nothing :
         build_trigger(trigger_channel; sys)
 
@@ -151,7 +148,7 @@ function build_tse(
             seq += excitation
             shot_excitation_center = excitation_start + excitation_center
             timing.first_delay > 0 &&
-                (seq += make_delay(timing.first_delay * u"s"))
+                (seq += make_delay(timing.first_delay))
 
             refocusing_centers = Float64[]
             packet_centers = Float64[]
@@ -165,7 +162,7 @@ function build_tse(
                 )
                 seq += timing.post_crusher
                 timing.pre_packet_delay > 0 &&
-                    (seq += make_delay(timing.pre_packet_delay * u"s"))
+                    (seq += make_delay(timing.pre_packet_delay))
 
                 packet_start = dur(seq)
                 seq += packets[echo, shot]
@@ -173,7 +170,7 @@ function build_tse(
                 iszero(order[echo, shot]) &&
                     (effective_TE = packet_centers[end] - shot_excitation_center)
                 if echo < echo_train_length && timing.post_packet_delay > 0
-                    seq += make_delay(timing.post_packet_delay * u"s")
+                    seq += make_delay(timing.post_packet_delay)
                 end
             end
 
@@ -192,7 +189,7 @@ function build_tse(
                     ),
                 )
             end
-            spin_echo_error <= sys.DUR_Δt + 1e-12 || error(
+            spin_echo_error <= sys.limits.DUR_Δt + 1e-12 || error(
                 "Assembled TSE line centers miss their spin echoes by " *
                 "$(spin_echo_error) s.")
 
@@ -216,7 +213,7 @@ function build_tse(
                     "TR=$(actual_TR) s is shorter than the minimum TSE shot " *
                     "duration $(shot_duration) s.")
                 shot_delay = actual_TR - shot_duration
-                shot_delay > 0 && (seq += make_delay(shot_delay * u"s"))
+                shot_delay > 0 && (seq += make_delay(shot_delay))
             end
         end
     end
@@ -229,7 +226,7 @@ function build_tse(
     isnothing(actual_TR) || (seq.DEF["TR"] = actual_TR)
     isnothing(trigger_channel) ||
         (seq.DEF["TriggerChannel"] = String(trigger_channel))
-    seq.DEF["FOV"] = [line_kernel.FOV..., Float64(slice_thickness)]
+    seq.DEF["FOV"] = [line_kernel.FOV..., slice_thickness]
     seq.DEF["Nx"], seq.DEF["Ny"] = line_kernel.matrix
     seq.DEF["Nz"] = 1
     return seq

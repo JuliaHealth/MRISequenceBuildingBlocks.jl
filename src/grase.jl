@@ -1,8 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: make_delay
-using Unitful
-
-
 function _grase_epi_packets(epi_kernel)
     for property in (:readout, :echo_center_time, :lines, :rewind_m0, :FOV, :matrix)
         hasproperty(epi_kernel, property) ||
@@ -88,6 +83,8 @@ function build_grase(
     refocusing_time_bw_product=4,
     refocusing_apodization=0.46,
 )
+    slice_thickness, crusher_phase, refocusing_phase, refocusing_bandwidth =
+        to_SI.((slice_thickness, crusher_phase, refocusing_phase, refocusing_bandwidth))
     slice_thickness > 0 || error("slice_thickness must be positive.")
     crusher_phase >= 0 || error("crusher_phase must be non-negative.")
 
@@ -121,7 +118,7 @@ function build_grase(
         excitation_start = dur(seq)
         seq += excitation
         timing.first_delay > 0 &&
-            (seq += make_delay(timing.first_delay * u"s"))
+            (seq += make_delay(timing.first_delay))
 
         for group in eachindex(packets)
             seq += timing.pre_crusher
@@ -133,13 +130,13 @@ function build_grase(
             )
             seq += timing.post_crusher
             timing.pre_packet_delay > 0 &&
-                (seq += make_delay(timing.pre_packet_delay * u"s"))
+                (seq += make_delay(timing.pre_packet_delay))
 
             packet_start = dur(seq)
             seq += packets[group]
             push!(packet_centers, packet_start + packet_center)
             if group < length(packets) && timing.post_packet_delay > 0
-                seq += make_delay(timing.post_packet_delay * u"s")
+                seq += make_delay(timing.post_packet_delay)
             end
         end
     end
@@ -159,7 +156,7 @@ function build_grase(
             ),
         )
     end
-    spin_echo_error <= sys.DUR_Δt + 1e-12 || error(
+    spin_echo_error <= sys.limits.DUR_Δt + 1e-12 || error(
         "Assembled GRASE packet centers miss their spin echoes by " *
         "$(spin_echo_error) s.")
 
@@ -174,7 +171,7 @@ function build_grase(
     seq.DEF["TE"] =
         packet_centers[zero_group] - (excitation_start + excitation_center)
     seq.DEF["SpinEchoSpacing"] = spin_echo_spacing
-    seq.DEF["FOV"] = [epi_kernel.FOV..., Float64(slice_thickness)]
+    seq.DEF["FOV"] = [epi_kernel.FOV..., slice_thickness]
     seq.DEF["Nx"], seq.DEF["Ny"] = epi_kernel.matrix
     seq.DEF["Nz"] = 1
     return seq

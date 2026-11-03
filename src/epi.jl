@@ -1,8 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: make_adc, make_delay, make_label, make_trapezoid
-using Unitful
-
-
 # EPI keeps its own readout timing because the ramp simultaneously constrains the
 # bipolar Gx reversal and the Gy blip; it is not a Cartesian GRE readout ramp.
 function _epi_readout_params(FOV, matrix, sys, BWpp; max_blip_steps=1)
@@ -10,31 +5,31 @@ function _epi_readout_params(FOV, matrix, sys, BWpp; max_blip_steps=1)
     N_ro = Int(matrix[1])
 
     dt_ideal = 1.0 / (N_ro * BWpp)
-    N_dwell = max(round(Int, dt_ideal / sys.ADC_Δt), 1)
-    dt = N_dwell * sys.ADC_Δt
-    adc_center_shift = mod(dt / 2, sys.RF_Δt)
+    N_dwell = max(round(Int, dt_ideal / sys.limits.ADC_Δt), 1)
+    dt = N_dwell * sys.limits.ADC_Δt
+    adc_center_shift = mod(dt / 2, sys.limits.RF_Δt)
 
     Ga = 1.0 / (γ * dt * FOV_ro)
-    Ga > sys.Gmax && error(
+    Ga > sys.limits.Gmax && error(
         "Readout Ga=$(round(Ga*1e3,digits=2)) mT/m exceeds " *
-        "Gmax=$(round(sys.Gmax*1e3,digits=2)) mT/m - reduce BWpp")
+        "Gmax=$(round(sys.limits.Gmax*1e3,digits=2)) mT/m - reduce BWpp")
 
     Ta_adc = dt * (N_ro - 1)
-    Ta = ceil((Ta_adc + adc_center_shift) / sys.GR_Δt) * sys.GR_Δt
+    Ta = ceil((Ta_adc + adc_center_shift) / sys.limits.GR_Δt) * sys.limits.GR_Δt
 
     ΔMy = 1.0 / (γ * FOV_pe)
     M_blip = max_blip_steps * ΔMy
     ζ_slew = sqrt(
-        (Ga^2 + sqrt(Ga^4 + 4 * sys.Smax^2 * M_blip^2)) /
-        (2 * sys.Smax^2)
+        (Ga^2 + sqrt(Ga^4 + 4 * sys.limits.Smax^2 * M_blip^2)) /
+        (2 * sys.limits.Smax^2)
     )
     ζ_adc = max(
-        dt / 2 + sys.ADC_dead_time - adc_center_shift,
-        dt / 2 + sys.ADC_dead_time + adc_center_shift - (Ta - Ta_adc),
+        dt / 2 + sys.limits.ADC_dead_time - adc_center_shift,
+        dt / 2 + sys.limits.ADC_dead_time + adc_center_shift - (Ta - Ta_adc),
     )
     ζ = ceil(
-        max(ζ_slew, abs(M_blip) / sys.Gmax, ζ_adc) / sys.GR_Δt,
-    ) * sys.GR_Δt
+        max(ζ_slew, abs(M_blip) / sys.limits.Gmax, ζ_adc) / sys.limits.GR_Δt,
+    ) * sys.limits.GR_Δt
 
     return (; FOV_ro, FOV_pe, N_ro, dt, adc_center_shift, Ga, Ta_adc, Ta, ζ, ΔMy)
 end
@@ -62,7 +57,7 @@ end
 function _epi_common_lobe_timing(moments, sys)
     worst_moment = maximum(moment -> sqrt(sum(abs2, moment)), moments)
     flat, ramp = worst_moment > 0 ?
-        _lobe_timing(worst_moment, sys) : (0.0, sys.GR_Δt)
+        _lobe_timing(worst_moment, sys) : (0.0, sys.limits.GR_Δt)
     return (;
         flat,
         ramp,
@@ -76,15 +71,15 @@ function _epi_gradient_lobe(moment, timing, sys)
     seq = Sequence(sys)
     addblock!(
         seq;
-        x=make_trapezoid(; amplitude=moment[1] * timing.inv_area * u"T/m",
-            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
-            fall_time=timing.ramp * u"s", sys),
-        y=make_trapezoid(; amplitude=moment[2] * timing.inv_area * u"T/m",
-            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
-            fall_time=timing.ramp * u"s", sys),
-        z=make_trapezoid(; amplitude=moment[3] * timing.inv_area * u"T/m",
-            flat_time=timing.flat * u"s", rise_time=timing.ramp * u"s",
-            fall_time=timing.ramp * u"s", sys),
+        x=make_trapezoid(; amplitude=moment[1] * timing.inv_area * γ,
+            flat_time=timing.flat, rise_time=timing.ramp,
+            fall_time=timing.ramp, sys),
+        y=make_trapezoid(; amplitude=moment[2] * timing.inv_area * γ,
+            flat_time=timing.flat, rise_time=timing.ramp,
+            fall_time=timing.ramp, sys),
+        z=make_trapezoid(; amplitude=moment[3] * timing.inv_area * γ,
+            flat_time=timing.flat, rise_time=timing.ramp,
+            fall_time=timing.ramp, sys),
     )
     return seq
 end
@@ -105,25 +100,25 @@ function _epi_readout_line(
     navigator=false,
     average=0,
 )
-    reversed = Int(polarity < 0)
+    reversed = polarity < 0
     RO = Sequence(sys)
     addblock!(
         RO;
-        x=make_trapezoid(; amplitude=polarity * params.Ga * u"T/m",
-            flat_time=params.Ta * u"s", rise_time=params.ζ * u"s",
-            fall_time=params.ζ * u"s", sys),
-        y=make_trapezoid(; amplitude=0.0u"T/m", flat_time=params.Ta * u"s",
-            rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys),
-        z=make_trapezoid(; amplitude=0.0u"T/m", flat_time=params.Ta * u"s",
-            rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys)
+        x=make_trapezoid(; amplitude=polarity * params.Ga * γ,
+            flat_time=params.Ta, rise_time=params.ζ,
+            fall_time=params.ζ, sys),
+        y=make_trapezoid(; amplitude=0.0, flat_time=params.Ta,
+            rise_time=params.ζ, fall_time=params.ζ, sys),
+        z=make_trapezoid(; amplitude=0.0, flat_time=params.Ta,
+            rise_time=params.ζ, fall_time=params.ζ, sys)
     )
     adc_delay = _epi_adc_delay(params, polarity)
     adc = params.N_ro == 1 ?
         ADC(params.N_ro, params.Ta_adc, adc_delay) :
         make_adc(
             params.N_ro,
-            params.dt * u"s";
-            delay=(adc_delay - params.dt / 2) * u"s",
+            params.dt;
+            delay=(adc_delay - params.dt / 2),
             sys,
         )
     RO.ADC = [adc]
@@ -131,7 +126,7 @@ function _epi_readout_line(
         make_label(:SET, :LIN, line_index),
         make_label(:SET, :REV, reversed),
         make_label(:SET, :SEG, reversed),
-        make_label(:SET, :NAV, Int(navigator)),
+        make_label(:SET, :NAV, navigator),
         make_label(:SET, :AVG, average),
     ]
     return RO
@@ -165,13 +160,13 @@ function _epi_echo_group(
             BLIP = Sequence(sys)
             addblock!(
                 BLIP;
-                x=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
-                    rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys),
-                y=make_trapezoid(; amplitude=blip_moment / params.ζ * u"T/m",
-                    flat_time=0.0u"s", rise_time=params.ζ * u"s",
-                    fall_time=params.ζ * u"s", sys),
-                z=make_trapezoid(; amplitude=0.0u"T/m", flat_time=0.0u"s",
-                    rise_time=params.ζ * u"s", fall_time=params.ζ * u"s", sys),
+                x=make_trapezoid(; amplitude=0.0, flat_time=0.0,
+                    rise_time=params.ζ, fall_time=params.ζ, sys),
+                y=make_trapezoid(; amplitude=blip_moment / params.ζ * γ,
+                    flat_time=0.0, rise_time=params.ζ,
+                    fall_time=params.ζ, sys),
+                z=make_trapezoid(; amplitude=0.0, flat_time=0.0,
+                    rise_time=params.ζ, fall_time=params.ζ, sys),
             )
             BLIP.DUR[1] = 0.0
             seq += BLIP
@@ -288,7 +283,7 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
                 polarity=isodd(line) ? 1.0 : -1.0,
                 line_index=full_precenter,
                 navigator=true,
-                average=Int(line == n_lines),
+                average=line == n_lines,
             )
         end
         seq += _epi_gradient_lobe(
@@ -375,7 +370,7 @@ function _adc_events_fit_pulseq(seq, sys)
         adc = seq.ADC[block]
         adc.N > 0 || continue
         dwell = adc.N == 1 ? adc.T : adc.T / (adc.N - 1)
-        adc.delay >= dwell / 2 + sys.ADC_dead_time - 1e-12 || return false
+        adc.delay >= dwell / 2 + sys.limits.ADC_dead_time - 1e-12 || return false
         dur(adc, sys) <= seq.DUR[block] + 1e-12 || return false
     end
     return true
@@ -401,6 +396,7 @@ passed as the `navigator` keyword to [`build_grase`](@ref) or
 [`build_tse`](@ref).
 """
 function build_epi_navigator(excitation, epi_kernel; n_lines=3, post_delay)
+    post_delay = to_SI(post_delay)
     hasproperty(epi_kernel, :navigator) ||
         error("The EPI kernel must provide `navigator`.")
     return epi_kernel.navigator(excitation; n_lines, post_delay)
@@ -456,6 +452,8 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
     shot_partition=:interleaved,
     rewind_m0=true,
 )
+    FOV = to_SI.(FOV)
+    BWpp = to_SI(BWpp)
     base = _epi_base(
         FOV,
         matrix,
@@ -474,7 +472,7 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
 
     function readout(shot::Integer=1)
         validate_shot(shot)
-        return materialize_gradients(base.readout(shot))
+        return _materialize_gradients(base.readout(shot))
     end
 
     function center_time(seq::Sequence, shot::Integer=1)
@@ -499,13 +497,13 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
 
     function navigator(excitation; n_lines=3, post_delay)
         post_delay >= 0 || error("post_delay must be non-negative.")
-        actual_post_delay = ceil_to_raster(post_delay, sys.DUR_Δt)
+        actual_post_delay = ceil_to_raster(post_delay, sys.limits.DUR_Δt)
         seq = Sequence(sys)
         @addblock begin
             seq += excitation
             seq += base.navigator_readout(n_lines)
             actual_post_delay > 0 &&
-                (seq += make_delay(actual_post_delay * u"s"))
+                (seq += make_delay(actual_post_delay))
         end
         return seq
     end

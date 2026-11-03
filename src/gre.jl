@@ -1,7 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: make_adc, make_label, make_trapezoid
-using Unitful
-
 function _readout_partial_fourier_geometry(N_ro, partial_fourier)
     0.5 ≤ partial_fourier ≤ 1.0 || error(
         "readout_partial_fourier must be between 0.5 and 1.0 (got $partial_fourier)")
@@ -24,25 +20,25 @@ function _design_cartesian_readout(FOV_ro, N_ro, sys, BWpp;
         _readout_partial_fourier_geometry(N_ro, partial_fourier)
 
     dwell_ideal = 1.0 / (N_acq * BWpp)
-    dwell = max(round(Int, dwell_ideal / sys.ADC_Δt), 1) * sys.ADC_Δt
+    dwell = max(round(Int, dwell_ideal / sys.limits.ADC_Δt), 1) * sys.limits.ADC_Δt
     gradient = 1.0 / (γ * dwell * FOV_ro)
-    gradient > sys.Gmax && error(
+    gradient > sys.limits.Gmax && error(
         "Readout gradient=$(round(gradient*1e3,digits=2)) mT/m exceeds " *
-        "Gmax=$(round(sys.Gmax*1e3,digits=2)) mT/m — reduce BWpp")
+        "Gmax=$(round(sys.limits.Gmax*1e3,digits=2)) mT/m — reduce BWpp")
 
     adc_duration = dwell * (N_acq - 1)
-    ramp = ceil(gradient / sys.Smax / sys.GR_Δt) * sys.GR_Δt
-    adc_delay = max(ramp, dwell / 2 + sys.ADC_dead_time)
+    ramp = ceil(gradient / sys.limits.Smax / sys.limits.GR_Δt) * sys.limits.GR_Δt
+    adc_delay = max(ramp, dwell / 2 + sys.limits.ADC_dead_time)
     gradient_duration = ceil((
         adc_duration +
-        max(adc_delay + dwell / 2 + sys.ADC_dead_time - 2ramp, 0.0)
-    ) / sys.GR_Δt) * sys.GR_Δt
+        max(adc_delay + dwell / 2 + sys.limits.ADC_dead_time - 2ramp, 0.0)
+    ) / sys.limits.GR_Δt) * sys.limits.GR_Δt
 
     if center_readout
         block_duration = ceil_to_raster(
             max(gradient_duration + 2ramp,
                 2 * (adc_delay + n_precenter * dwell)),
-            sys.DUR_Δt,
+            sys.limits.DUR_Δt,
         )
         adc_delay += block_duration / 2 -
             (adc_delay + n_precenter * dwell)
@@ -54,17 +50,17 @@ function _design_cartesian_readout(FOV_ro, N_ro, sys, BWpp;
         ADC(N_acq, adc_duration, adc_delay) :
         make_adc(
             N_acq,
-            dwell * u"s";
-            delay=(adc_delay - dwell / 2) * u"s",
+            dwell;
+            delay=(adc_delay - dwell / 2),
             sys,
         )
     @addblock block += (
         adc,
         x=make_trapezoid(;
-            amplitude=gradient * u"T/m",
-            flat_time=gradient_duration * u"s",
-            rise_time=ramp * u"s",
-            fall_time=ramp * u"s",
+            amplitude=gradient * γ,
+            flat_time=gradient_duration,
+            rise_time=ramp,
+            fall_time=ramp,
             sys,
         ),
     )
@@ -153,6 +149,9 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
     center_readout=false,
     rewind_m0=false)
 
+    FOV = to_SI.(FOV)
+    fixed_area = to_SI.(fixed_area)
+    BWpp = to_SI(BWpp)
     # ── Input validation ───────────────────────────────────────────────────────
     length(FOV) == length(matrix) || error(
         "FOV and matrix must have the same length " *
@@ -205,21 +204,21 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
     )
     M_rewind = sqrt(Mx_rewind^2 + My_rewind_worst^2 + Mz_rewind_worst^2)
     T_r, ζ_r = rewind_m0 && M_rewind > 0 ?
-        _lobe_timing(M_rewind, sys) : (0.0, sys.GR_Δt)
+        _lobe_timing(M_rewind, sys) : (0.0, sys.limits.GR_Δt)
     inv_area_r = rewind_m0 && M_rewind > 0 ? 1.0 / (T_r + ζ_r) : 0.0
 
     function append_rewinder!(seq, y_moment, z_moment)
         rewind_m0 && M_rewind > 0 || return seq
         @addblock seq += (
-            x=make_trapezoid(; amplitude=Mx_rewind * inv_area_r * u"T/m",
-                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
-                fall_time=ζ_r * u"s", sys),
-            y=make_trapezoid(; amplitude=y_moment * inv_area_r * u"T/m",
-                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
-                fall_time=ζ_r * u"s", sys),
-            z=make_trapezoid(; amplitude=z_moment * inv_area_r * u"T/m",
-                flat_time=T_r * u"s", rise_time=ζ_r * u"s",
-                fall_time=ζ_r * u"s", sys),
+            x=make_trapezoid(; amplitude=Mx_rewind * inv_area_r * γ,
+                flat_time=T_r, rise_time=ζ_r,
+                fall_time=ζ_r, sys),
+            y=make_trapezoid(; amplitude=y_moment * inv_area_r * γ,
+                flat_time=T_r, rise_time=ζ_r,
+                fall_time=ζ_r, sys),
+            z=make_trapezoid(; amplitude=z_moment * inv_area_r * γ,
+                flat_time=T_r, rise_time=ζ_r,
+                fall_time=ζ_r, sys),
         )
         return seq
     end
@@ -228,12 +227,12 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
     function gre_1D()
         PRE = Sequence(sys)
         @addblock PRE += (
-            x=make_trapezoid(; amplitude=G_x_pre * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            y=make_trapezoid(; amplitude=Ay * inv_area * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_pre * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_pre * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            y=make_trapezoid(; amplitude=Ay * inv_area * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            z=make_trapezoid(; amplitude=G_z_pre * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
         )
         seq = Sequence(sys)
         @addblock seq += PRE + RO
@@ -245,12 +244,12 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
         G_pe = (i * pe.ΔM + Ay) * inv_area
         PRE = Sequence(sys)
         @addblock PRE += (
-            x=make_trapezoid(; amplitude=G_x_pre * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            y=make_trapezoid(; amplitude=G_pe * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_pre * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_pre * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            y=make_trapezoid(; amplitude=G_pe * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            z=make_trapezoid(; amplitude=G_z_pre * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
         )
         seq = Sequence(sys)
         @addblock seq += PRE + RO
@@ -265,12 +264,12 @@ function gre_readout_kernel(FOV, matrix, sys, BWpp;
         G_par = (j * par.ΔM + Az) * inv_area
         PRE = Sequence(sys)
         @addblock PRE += (
-            x=make_trapezoid(; amplitude=G_x_pre * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            y=make_trapezoid(; amplitude=G_pe * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
-            z=make_trapezoid(; amplitude=G_par * u"T/m", flat_time=T_p * u"s",
-                rise_time=ζ_p * u"s", fall_time=ζ_p * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_pre * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            y=make_trapezoid(; amplitude=G_pe * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
+            z=make_trapezoid(; amplitude=G_par * γ, flat_time=T_p,
+                rise_time=ζ_p, fall_time=ζ_p, sys),
         )
         seq = Sequence(sys)
         @addblock seq += PRE + RO
@@ -313,6 +312,10 @@ function sgre_base(FOV, matrix, sys, BWpp;
     fixed_area=(0.0, 0.0, 0.0),
     readout_partial_fourier=1.0)
 
+    FOV = to_SI.(FOV)
+    spoil_area = to_SI.(spoil_area)
+    fixed_area = to_SI.(fixed_area)
+    BWpp = to_SI(BWpp)
     length(spoil_area) == 3 || error("spoil_area must have exactly 3 elements (x, y, z)")
 
     gre_line = gre_readout_kernel(
@@ -346,7 +349,7 @@ function sgre_base(FOV, matrix, sys, BWpp;
 
     # ── Spoiler lobe timing ────────────────────────────────────────────────────
     M_vec_spo = sqrt(Mx_spo^2 + My_spo^2 + Mz_spo^2)
-    T_s, ζ_s = M_vec_spo > 0 ? _lobe_timing(M_vec_spo, sys) : (0.0, sys.GR_Δt)
+    T_s, ζ_s = M_vec_spo > 0 ? _lobe_timing(M_vec_spo, sys) : (0.0, sys.limits.GR_Δt)
     inv_area_s = M_vec_spo > 0 ? 1.0 / (T_s + ζ_s) : 0.0
     G_x_spo = (Sx - M_x_nom) * inv_area_s      # constant across all lines
 
@@ -356,12 +359,12 @@ function sgre_base(FOV, matrix, sys, BWpp;
         G_z_spo = Sz * inv_area_s
         seq = gre_line()
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            y=make_trapezoid(; amplitude=G_y_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            y=make_trapezoid(; amplitude=G_y_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            z=make_trapezoid(; amplitude=G_z_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
         )
         return seq
     end
@@ -371,12 +374,12 @@ function sgre_base(FOV, matrix, sys, BWpp;
         G_z_spo = Sz * inv_area_s
         seq = gre_line(i)
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            y=make_trapezoid(; amplitude=G_y_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            y=make_trapezoid(; amplitude=G_y_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            z=make_trapezoid(; amplitude=G_z_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
         )
         return seq
     end
@@ -386,12 +389,12 @@ function sgre_base(FOV, matrix, sys, BWpp;
         G_z_spo = (Sz - j * ΔMz) * inv_area_s
         seq = gre_line(i, j)
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            y=make_trapezoid(; amplitude=G_y_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_spo * u"T/m", flat_time=T_s * u"s",
-                rise_time=ζ_s * u"s", fall_time=ζ_s * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            y=make_trapezoid(; amplitude=G_y_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
+            z=make_trapezoid(; amplitude=G_z_spo * γ, flat_time=T_s,
+                rise_time=ζ_s, fall_time=ζ_s, sys),
         )
         return seq
     end
