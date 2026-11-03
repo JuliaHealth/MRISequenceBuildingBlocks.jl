@@ -1,8 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: build_trigger, make_delay
-using Unitful
-
-
 function _se_epi_shots(
     excitation,
     epi_kernel,
@@ -38,8 +33,8 @@ function _se_epi_shots(
     length(minimum_shots) == 1 && return minimum_shots
 
     common_TE = ceil_to_raster(
-        maximum(shot.DEF["TE"] for shot in minimum_shots) + sys.DUR_Δt,
-        sys.DUR_Δt,
+        maximum(shot.DEF["TE"] for shot in minimum_shots) + sys.limits.DUR_Δt,
+        sys.limits.DUR_Δt,
     )
     return [build_shot(shot, common_TE) for shot in shots]
 end
@@ -87,6 +82,10 @@ function build_se_epi(
     refocusing_time_bw_product=4,
     refocusing_apodization=0.46,
 )
+    slice_thickness, TE, post_shot_delay, crusher_phase,
+        refocusing_phase, refocusing_bandwidth =
+        to_SI.((slice_thickness, TE, post_shot_delay, crusher_phase,
+            refocusing_phase, refocusing_bandwidth))
     for property in (:readout, :center_time, :lines, :FOV, :matrix, :rewind_m0)
         hasproperty(epi_kernel, property) ||
             error("The EPI kernel must provide `$property`.")
@@ -106,9 +105,9 @@ function build_se_epi(
     trigger = isnothing(trigger_channel) ? nothing :
         build_trigger(trigger_channel; sys)
     actual_post_shot_delay = isnothing(post_shot_delay) ? nothing :
-        ceil_to_raster(post_shot_delay, sys.DUR_Δt)
+        ceil_to_raster(post_shot_delay, sys.limits.DUR_Δt)
     shot_delay = isnothing(actual_post_shot_delay) || iszero(actual_post_shot_delay) ?
-        nothing : make_delay(actual_post_shot_delay * u"s")
+        nothing : make_delay(actual_post_shot_delay)
 
     shots = _se_epi_shots(
         excitation,
@@ -135,7 +134,7 @@ function build_se_epi(
     end
 
     pop!(seq.DEF, "TE", nothing)
-    seq.DEF["FOV"] = [epi_kernel.FOV..., Float64(slice_thickness)]
+    seq.DEF["FOV"] = [epi_kernel.FOV..., slice_thickness]
     seq.DEF["Nx"], seq.DEF["Ny"] = epi_kernel.matrix
     seq.DEF["Nz"] = 1
     return seq

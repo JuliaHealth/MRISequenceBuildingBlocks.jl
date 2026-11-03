@@ -1,8 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: make_delay, make_sinc_pulse, make_trapezoid
-using Unitful
-
-
 function _sequence_rf_center(seq)
     block_starts = get_block_start_times(seq)
     centers = Float64[]
@@ -57,8 +52,8 @@ end
 
 
 function _refocusing_bandwidth(slice_thickness, sys)
-    gradient_limit = γ * sys.Gmax * slice_thickness
-    approximate_b1_limit = 2γ * sys.B1
+    gradient_limit = γ * sys.limits.Gmax * slice_thickness
+    approximate_b1_limit = 2γ * sys.limits.B1
     return min(gradient_limit, approximate_b1_limit)
 end
 
@@ -78,16 +73,16 @@ function _make_refocusing_events(
 
     duration = ceil_to_raster(
         time_bw_product / requested_bandwidth,
-        sys.GR_Δt,
+        sys.limits.GR_Δt,
     )
     duration > 0 || error("Refocusing duration must be positive.")
 
     while true
         rf, gradient, _ = make_sinc_pulse(
-            π * u"rad";
-            duration=duration * u"s",
-            slice_thickness=slice_thickness * u"m",
-            phase_offset=phase * u"rad",
+            π;
+            duration=duration,
+            slice_thickness=slice_thickness,
+            phase_offset=phase,
             time_bw_product,
             apodization,
             use=Refocusing(),
@@ -95,16 +90,16 @@ function _make_refocusing_events(
         )
 
         rf.delay += rf_shift
-        gradient.T += ceil_to_raster(rf_shift, sys.GR_Δt)
+        gradient.T += ceil_to_raster(rf_shift, sys.limits.GR_Δt)
 
-        if !isnothing(bandwidth) || !isfinite(sys.B1)
+        if !isnothing(bandwidth) || !isfinite(sys.limits.B1)
             return rf, gradient, duration
         end
 
         peak_b1 = maximum(abs, ampls(rf))
-        peak_b1 <= sys.B1 || peak_b1 ≈ sys.B1 || begin
-            longer = ceil_to_raster(duration * peak_b1 / sys.B1, sys.GR_Δt)
-            duration = max(longer, duration + sys.GR_Δt)
+        peak_b1 <= sys.limits.B1 || peak_b1 ≈ sys.limits.B1 || begin
+            longer = ceil_to_raster(duration * peak_b1 / sys.limits.B1, sys.limits.GR_Δt)
+            duration = max(longer, duration + sys.limits.GR_Δt)
             continue
         end
         return rf, gradient, duration
@@ -113,7 +108,7 @@ end
 
 
 """
-    build_refocusing_block(slice_thickness, sys; kwargs...)
+    _build_refocusing_block(slice_thickness, sys; kwargs...)
 
 Build a single slice-selective 180° refocusing block without the usual slice
 rephaser. The spin-echo builder accounts for the slice-gradient area in its
@@ -127,7 +122,7 @@ pre- and post-refocusing crusher lobes.
 - `apodization=0.46`: Cosine-window weight.
 - `rf_shift=0.0`: RF-raster timing shift used to fit the requested echo time. [`s`]
 """
-function build_refocusing_block(
+function _build_refocusing_block(
     slice_thickness,
     sys;
     bandwidth=nothing,
@@ -136,11 +131,13 @@ function build_refocusing_block(
     apodization=0.46,
     rf_shift=0.0,
 )
+    slice_thickness, bandwidth, phase, rf_shift =
+        to_SI.((slice_thickness, bandwidth, phase, rf_shift))
     slice_thickness > 0 || error("slice_thickness must be positive.")
     time_bw_product > 0 || error("time_bw_product must be positive.")
     0 <= apodization <= 1 || error("apodization must be between 0 and 1.")
     rf_shift >= 0 || error("rf_shift must be non-negative.")
-    isapprox(rf_shift / sys.RF_Δt, round(rf_shift / sys.RF_Δt); rtol=0, atol=1e-9) ||
+    isapprox(rf_shift / sys.limits.RF_Δt, round(rf_shift / sys.limits.RF_Δt); rtol=0, atol=1e-9) ||
         error("rf_shift must be on the RF raster.")
 
     rf, gradient, _ = _make_refocusing_events(
@@ -155,7 +152,7 @@ function build_refocusing_block(
 
     seq = Sequence(sys)
     addblock!(seq, rf; z=gradient)
-    seq.DUR[end] = ceil_to_raster(dur(seq[end], sys), sys.DUR_Δt)
+    seq.DUR[end] = ceil_to_raster(dur(seq[end], sys), sys.limits.DUR_Δt)
     check_timing(seq, sys)
     check_hw_limits(seq, sys)
     return seq
@@ -164,7 +161,7 @@ end
 
 function _z_lobe(target_area, sys)
     iszero(target_area) && return Sequence(sys)
-    gradient = make_trapezoid(; area=target_area * u"T*s/m", sys)
+    gradient = make_trapezoid(; area=target_area * γ, sys)
     seq = Sequence(sys)
     addblock!(seq; z=gradient)
     return seq
@@ -197,8 +194,8 @@ function _fit_refocused_train_timing(
     refocusing_apodization,
 )
     candidates = NamedTuple[]
-    for rf_shift in 0:sys.RF_Δt:(sys.DUR_Δt - sys.RF_Δt)
-        refocus = build_refocusing_block(
+    for rf_shift in 0:sys.limits.RF_Δt:(sys.limits.DUR_Δt - sys.limits.RF_Δt)
+        refocus = _build_refocusing_block(
             slice_thickness,
             sys;
             bandwidth=refocusing_bandwidth,
@@ -225,11 +222,11 @@ function _fit_refocused_train_timing(
             max(first_half, before_packet, after_packet)
 
         first_delay =
-            ceil_to_raster(target_half - first_half, sys.DUR_Δt)
+            ceil_to_raster(target_half - first_half, sys.limits.DUR_Δt)
         pre_packet_delay =
-            ceil_to_raster(target_half - before_packet, sys.DUR_Δt)
+            ceil_to_raster(target_half - before_packet, sys.limits.DUR_Δt)
         post_packet_delay = n_packets == 1 ? 0.0 :
-            ceil_to_raster(target_half - after_packet, sys.DUR_Δt)
+            ceil_to_raster(target_half - after_packet, sys.limits.DUR_Δt)
 
         actual_first_half = first_half + first_delay
         actual_before_packet = before_packet + pre_packet_delay
@@ -265,7 +262,7 @@ function _fit_refocused_train_timing(
         candidate.maximum_spacing,
         candidate.timing_error,
     ))[1]
-    best.timing_error <= sys.DUR_Δt + 1e-12 || error(
+    best.timing_error <= sys.limits.DUR_Δt + 1e-12 || error(
         "No refocused-train timing solution centers every readout packet on a " *
         "spin echo within one block raster.")
     return best
@@ -287,8 +284,8 @@ function _fit_spin_echo_timing(
 )
     candidates = NamedTuple[]
 
-    for rf_shift in 0:sys.RF_Δt:(sys.DUR_Δt - sys.RF_Δt)
-        refocus = build_refocusing_block(
+    for rf_shift in 0:sys.limits.RF_Δt:(sys.limits.DUR_Δt - sys.limits.RF_Δt)
+        refocus = _build_refocusing_block(
             slice_thickness,
             sys;
             bandwidth=refocusing_bandwidth,
@@ -306,7 +303,7 @@ function _fit_spin_echo_timing(
             dur(post_crusher) + readout_center
 
         if isnothing(TE)
-            rastered_min_post_delay = ceil_to_raster(min_post_delay, sys.DUR_Δt)
+            rastered_min_post_delay = ceil_to_raster(min_post_delay, sys.limits.DUR_Δt)
             if pre_arm >= post_arm + rastered_min_post_delay
                 target_pre_delay = 0.0
                 target_post_delay = pre_arm - post_arm
@@ -320,12 +317,12 @@ function _fit_spin_echo_timing(
         end
 
         pre_delays = (
-            floor_to_raster(max(target_pre_delay, 0.0), sys.DUR_Δt),
-            ceil_to_raster(max(target_pre_delay, 0.0), sys.DUR_Δt),
+            floor_to_raster(max(target_pre_delay, 0.0), sys.limits.DUR_Δt),
+            ceil_to_raster(max(target_pre_delay, 0.0), sys.limits.DUR_Δt),
         )
         post_delays = (
-            floor_to_raster(max(target_post_delay, 0.0), sys.DUR_Δt),
-            ceil_to_raster(max(target_post_delay, 0.0), sys.DUR_Δt),
+            floor_to_raster(max(target_post_delay, 0.0), sys.limits.DUR_Δt),
+            ceil_to_raster(max(target_post_delay, 0.0), sys.limits.DUR_Δt),
         )
 
         for pre_delay in pre_delays, post_delay in post_delays
@@ -338,7 +335,7 @@ function _fit_spin_echo_timing(
             error = isnothing(TE) ?
                 abs(spin_echo_TE - readout_TE) :
                 max(abs(spin_echo_TE - TE), abs(readout_TE - TE))
-            error <= sys.DUR_Δt + 1e-12 || continue
+            error <= sys.limits.DUR_Δt + 1e-12 || continue
 
             push!(candidates, (;
                 refocus,
@@ -425,6 +422,10 @@ function build_spin_echo(
     refocusing_apodization=0.46,
     min_post_delay=0.0,
 )
+    slice_thickness, TE, crusher_phase, refocusing_phase,
+        refocusing_bandwidth, min_post_delay =
+        to_SI.((slice_thickness, TE, crusher_phase, refocusing_phase,
+            refocusing_bandwidth, min_post_delay))
     isnothing(TE) || TE > 0 || error("TE must be positive or nothing.")
     slice_thickness > 0 || error("slice_thickness must be positive.")
     min_post_delay >= 0 || error("min_post_delay must be non-negative.")
@@ -455,11 +456,11 @@ function build_spin_echo(
 
     seq = Sequence(sys)
     seq += excitation
-    pre_delay > 0 && (seq += make_delay(pre_delay * u"s"))
+    pre_delay > 0 && (seq += make_delay(pre_delay))
     seq += pre_crusher
     seq += refocus
     seq += post_crusher
-    post_delay > 0 && (seq += make_delay(post_delay * u"s"))
+    post_delay > 0 && (seq += make_delay(post_delay))
     seq += readout
 
     seq.DEF["TE"] = actual_TE

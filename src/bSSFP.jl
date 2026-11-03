@@ -1,9 +1,3 @@
-using KomaMRI
-using KomaMRI.PulseDesigner: build_trigger, make_label, make_trapezoid
-using LinearAlgebra: cross, dot, normalize
-using Unitful
-
-
 """
     bssfp_readout_kernel(FOV, matrix, sys, BWpp; fixed_area=(0, 0, 0))
 
@@ -22,6 +16,9 @@ block. All areas use `T*s/m`.
 function bssfp_readout_kernel(FOV, matrix, sys, BWpp;
     fixed_area=(0.0, 0.0, 0.0))
 
+    FOV = to_SI.(FOV)
+    fixed_area = to_SI.(fixed_area)
+    BWpp = to_SI(BWpp)
     gre_kernel = gre_readout_kernel(
         FOV,
         matrix,
@@ -54,14 +51,14 @@ function bssfp_readout_kernel(FOV, matrix, sys, BWpp;
     function bssfp_1D()
         seq = gre_line()
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_rew * u"T/m", flat_time=T_rew * u"s",
-                rise_time=ζ_rew * u"s", fall_time=ζ_rew * u"s", sys),
-            y=make_trapezoid(; amplitude=Ay * inv_rew_area * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
-            z=make_trapezoid(; amplitude=Az * inv_rew_area * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_rew * γ, flat_time=T_rew,
+                rise_time=ζ_rew, fall_time=ζ_rew, sys),
+            y=make_trapezoid(; amplitude=Ay * inv_rew_area * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
+            z=make_trapezoid(; amplitude=Az * inv_rew_area * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
         )
         return seq
     end
@@ -71,14 +68,14 @@ function bssfp_readout_kernel(FOV, matrix, sys, BWpp;
         G_y_rew = (Ay - i * pe.ΔM) * inv_rew_area
         seq = gre_line(i)
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_rew * u"T/m", flat_time=T_rew * u"s",
-                rise_time=ζ_rew * u"s", fall_time=ζ_rew * u"s", sys),
-            y=make_trapezoid(; amplitude=G_y_rew * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
-            z=make_trapezoid(; amplitude=Az * inv_rew_area * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_rew * γ, flat_time=T_rew,
+                rise_time=ζ_rew, fall_time=ζ_rew, sys),
+            y=make_trapezoid(; amplitude=G_y_rew * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
+            z=make_trapezoid(; amplitude=Az * inv_rew_area * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
         )
         return seq
     end
@@ -90,14 +87,14 @@ function bssfp_readout_kernel(FOV, matrix, sys, BWpp;
         G_z_rew = (Az - j * par.ΔM) * inv_rew_area
         seq = gre_line(i, j)
         @addblock seq += (
-            x=make_trapezoid(; amplitude=G_x_rew * u"T/m", flat_time=T_rew * u"s",
-                rise_time=ζ_rew * u"s", fall_time=ζ_rew * u"s", sys),
-            y=make_trapezoid(; amplitude=G_y_rew * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
-            z=make_trapezoid(; amplitude=G_z_rew * u"T/m",
-                flat_time=T_rew * u"s", rise_time=ζ_rew * u"s",
-                fall_time=ζ_rew * u"s", sys),
+            x=make_trapezoid(; amplitude=G_x_rew * γ, flat_time=T_rew,
+                rise_time=ζ_rew, fall_time=ζ_rew, sys),
+            y=make_trapezoid(; amplitude=G_y_rew * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
+            z=make_trapezoid(; amplitude=G_z_rew * γ,
+                flat_time=T_rew, rise_time=ζ_rew,
+                fall_time=ζ_rew, sys),
         )
         return seq
     end
@@ -153,6 +150,7 @@ function build_cartesian_bssfp(
     lines_per_trigger=nothing,
     view_order=:linear,
 )
+    post_trigger_delay = to_SI(post_trigger_delay)
     post_trigger_delay ≥ 0 || error("post_trigger_delay must be non-negative.")
     n_ramp_shots isa Integer && n_ramp_shots ≥ 1 ||
         error("n_ramp_shots must be a positive integer.")
@@ -188,10 +186,10 @@ function build_cartesian_bssfp(
     trigger_block = if isnothing(trigger)
         nothing
     else
-        trigger_duration = ceil_to_raster(post_trigger_delay, sys.DUR_Δt)
+        trigger_duration = ceil_to_raster(post_trigger_delay, sys.limits.DUR_Δt)
         build_trigger(
             trigger;
-            duration=trigger_duration * u"s",
+            duration=trigger_duration,
             sys,
         )
     end
@@ -211,13 +209,13 @@ function build_cartesian_bssfp(
             for shot in 1:n_ramp_shots
                 phase = cispi(shot - 1)
                 scale = shot / n_ramp_shots
-                seq += rf_excitation(excitation, scale * phase) +
+                seq += _rf_excitation(excitation, scale * phase) +
                     phase * ramp_readout
             end
 
             for (shot, encoding) in enumerate(encoding_group)
                 phase = cispi(n_ramp_shots + shot - 1)
-                seq += rf_excitation(excitation, phase) +
+                seq += _rf_excitation(excitation, phase) +
                     phase * readout_kernel.readout(encoding...)
             end
         end
@@ -244,7 +242,7 @@ function _bssfp_cine_shot(
     flip_scale=1.0,
 )
     phase = cispi(rf_index - 1)
-    shot = rf_excitation(excitation, flip_scale * phase) + phase * readout
+    shot = _rf_excitation(excitation, flip_scale * phase) + phase * readout
     phase_label = make_label(:SET, :PHS, cardiac_bin - 1)
     for block in eachindex(shot.ADC)
         shot.ADC[block].N > 0 || continue
@@ -307,6 +305,8 @@ function build_cine_bssfp(
     view_order=:linear,
     encoding_order=nothing,
 )
+    RR, post_trigger_delay, steady_state_duration =
+        to_SI.((RR, post_trigger_delay, steady_state_duration))
     cardiac_bins isa Integer && cardiac_bins > 0 ||
         error("cardiac_bins must be a positive integer.")
     isnothing(RR) || RR > 0 || error("RR must be positive.")
@@ -370,10 +370,10 @@ function build_cine_bssfp(
         ]
     end
 
-    trigger_duration = ceil_to_raster(post_trigger_delay, sys.DUR_Δt)
+    trigger_duration = ceil_to_raster(post_trigger_delay, sys.limits.DUR_Δt)
     trigger = isnothing(trigger_channel) ? nothing : build_trigger(
         trigger_channel;
-        duration=trigger_duration * u"s",
+        duration=trigger_duration,
         sys,
     )
 
@@ -472,6 +472,8 @@ function build_cine_bssfp(
     slice_shift=0.0,
     kwargs...,
 )
+    FOV = to_SI.(FOV)
+    BWpp, slice_shift = to_SI.((BWpp, slice_shift))
     length(FOV) == 3 || error("FOV must have readout, phase, and slice dimensions.")
     length(matrix) in (2, 3) || error("matrix must be two- or three-dimensional.")
     length(slice_normal) == 3 || error("slice_normal must have three components.")

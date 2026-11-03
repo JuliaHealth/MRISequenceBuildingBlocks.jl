@@ -1,5 +1,3 @@
-using KomaMRI
-
 const _TIMING_ATOL = 1e-12
 
 struct _GradPiece
@@ -162,9 +160,9 @@ function _collect_split_pieces(seq, block_edges, threaded)
     nwork = naxes * nblocks
     outboard = fill(false, naxes, nblocks)
 
-    if threaded && Base.Threads.nthreads() > 1 && nwork > 1
+    if threaded && nthreads() > 1 && nwork > 1
         buffers = Vector{Vector{_QueuedPiece}}(undef, nwork)
-        Base.Threads.@threads :static for linear in 1:nwork
+        @threads :static for linear in 1:nwork
             axis = mod1(linear, naxes)
             block = div(linear - axis, naxes) + 1
             buffer = _QueuedPiece[]
@@ -210,8 +208,8 @@ function _combine_queues(seq, queues, outboard, threaded)
     nwork = naxes * nblocks
     GR = Matrix{Grad}(undef, size(seq.GR))
 
-    if threaded && Base.Threads.nthreads() > 1 && nwork > 1
-        Base.Threads.@threads for linear in 1:nwork
+    if threaded && nthreads() > 1 && nwork > 1
+        @threads for linear in 1:nwork
             axis = mod1(linear, naxes)
             block = div(linear - axis, naxes) + 1
             GR[axis, block] = _combine_block_axis(seq, queues, outboard, axis, block)
@@ -249,7 +247,7 @@ end
 
 
 """
-    materialize_gradients(seq; threaded=Base.Threads.nthreads() > 1)
+    _materialize_gradients(seq; threaded=nthreads() > 1)
 
 Return a new sequence with gradients clipped to block boundaries and overlapping
 gradient pieces combined. RF and ADC events are copied elementwise; extension and
@@ -262,7 +260,7 @@ Gradients may begin before or end after their nominal source block, but their
 full waveform must remain within the sequence. Set `threaded=false` to force
 serial processing.
 """
-function materialize_gradients(seq; threaded=Base.Threads.nthreads() > 1)
+function _materialize_gradients(seq; threaded=nthreads() > 1)
     block_edges = get_block_start_times(seq)
     queues, outboard = _collect_split_pieces(seq, block_edges, threaded)
     GR = _combine_queues(seq, queues, outboard, threaded)

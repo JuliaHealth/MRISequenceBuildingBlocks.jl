@@ -1,21 +1,15 @@
-using KomaMRI
-using KomaMRI.PulseDesigner:
-    build_trigger, make_delay, make_label, make_trapezoid
-using Unitful
-
-
 _pc_first_moment(venc) = 1 / (2γ * venc)
 
 function _pc_bipolar_timing(first_moment, sys)
-    ramp = ceil(cbrt(first_moment / (2sys.Smax)) / sys.GR_Δt) * sys.GR_Δt
+    ramp = ceil(cbrt(first_moment / (2sys.limits.Smax)) / sys.limits.GR_Δt) * sys.limits.GR_Δt
     gradient = first_moment / (2ramp^2)
-    gradient ≤ sys.Gmax && return (0.0, ramp)
+    gradient ≤ sys.limits.Gmax && return (0.0, ramp)
 
-    ramp = ceil(sys.Gmax / sys.Smax / sys.GR_Δt) * sys.GR_Δt
+    ramp = ceil(sys.limits.Gmax / sys.limits.Smax / sys.limits.GR_Δt) * sys.limits.GR_Δt
     flat = ceil(
-        max((-3ramp + sqrt(ramp^2 + 4first_moment / sys.Gmax)) / 2, 0.0) /
-        sys.GR_Δt,
-    ) * sys.GR_Δt
+        max((-3ramp + sqrt(ramp^2 + 4first_moment / sys.limits.Gmax)) / 2, 0.0) /
+        sys.limits.GR_Δt,
+    ) * sys.limits.GR_Δt
     return (flat, ramp)
 end
 
@@ -23,21 +17,21 @@ function _pc_velocity_module(axis, first_moment, flat, ramp, sys)
     duration = 2 * (flat + 2ramp)
     if iszero(first_moment)
         seq = Sequence(sys)
-        @addblock seq += make_delay(duration * u"s")
+        @addblock seq += make_delay(duration)
         return seq
     end
 
     gradient = first_moment / ((flat + ramp) * (flat + 2ramp))
-    gradient ≤ sys.Gmax || error(
+    gradient ≤ sys.limits.Gmax || error(
         "Velocity-encoding gradient $(round(gradient * 1e3, digits=2)) mT/m " *
-        "exceeds Gmax=$(round(sys.Gmax * 1e3, digits=2)) mT/m.")
+        "exceeds Gmax=$(round(sys.limits.Gmax * 1e3, digits=2)) mT/m.")
 
     function gradient_event(amplitude)
         return make_trapezoid(;
-            amplitude=amplitude * u"T/m",
-            flat_time=flat * u"s",
-            rise_time=ramp * u"s",
-            fall_time=ramp * u"s",
+            amplitude=amplitude * γ,
+            flat_time=flat,
+            rise_time=ramp,
+            fall_time=ramp,
             sys,
         )
     end
@@ -82,7 +76,7 @@ function _pc_shot(
     write_phs_label=true,
 )
     phase = cis(_pc_rf_phase(rf_index, rf_spoil_increment))
-    shot = rf_excitation(excitation, flip_scale * phase) +
+    shot = _rf_excitation(excitation, flip_scale * phase) +
         velocity_module +
         phase * readout
     labels = Extension[]
@@ -164,6 +158,11 @@ function build_pc(
     rf_spoil_increment=deg2rad(117),
     _encoding_axis=nothing,
 )
+    FOV = to_SI.(FOV)
+    venc, BWpp, RR, flip_angle, rf_bandwidth, spoil_phase,
+        steady_state_duration, post_trigger_delay, rf_spoil_increment =
+        to_SI.((venc, BWpp, RR, flip_angle, rf_bandwidth, spoil_phase,
+            steady_state_duration, post_trigger_delay, rf_spoil_increment))
     length(FOV) == 3 ||
         error("FOV must contain (readout, phase, slice_or_slab_thickness).")
     length(matrix) in (2, 3) ||
@@ -183,6 +182,8 @@ function build_pc(
     isnothing(_encoding_axis) || _encoding_axis in (:REF, :RO, :PE, :SS) ||
         error("encoding axis must be :REF, :RO, :PE, or :SS.")
     flip_angle > 0 || error("flip_angle must be positive.")
+    isnothing(rf_bandwidth) || rf_bandwidth > 0 ||
+        error("rf_bandwidth must be positive.")
     spoil_phase ≥ 0 || error("spoil_phase must be non-negative.")
     n_ramp_shots isa Integer && n_ramp_shots ≥ 0 ||
         error("n_ramp_shots must be a non-negative integer.")
@@ -198,12 +199,24 @@ function build_pc(
     FOV = Tuple(Float64.(FOV))
     matrix = Tuple(Int.(matrix))
     fixed_area = if isnothing(excitation)
-        excitation = slice_selective_sinc(
-            flip_angle,
-            FOV[3],
-            sys;
-            BW=rf_bandwidth,
-        )
+        bandwidth = isnothing(rf_bandwidth) ?
+            min(γ * sys.limits.Gmax * FOV[3], 2π * γ * sys.limits.B1 / flip_angle) :
+            rf_bandwidth
+        time_bw_product = 4
+        duration = ceil_to_raster(time_bw_product / bandwidth, sys.limits.GR_Δt)
+        while true
+            excitation = build_sinc_pulse(flip_angle; sys, duration,
+                slice_thickness=FOV[3], time_bw_product, apodization=0.46,
+                use=Excitation())
+            peak_b1 = maximum(abs, ampls(excitation.RF[1, 1]))
+            (!isnothing(rf_bandwidth) || peak_b1 <= sys.limits.B1) && break
+            duration = max(
+                ceil_to_raster(duration * peak_b1 / sys.limits.B1, sys.limits.GR_Δt),
+                duration + sys.limits.GR_Δt,
+            )
+        end
+        check_timing(excitation, sys)
+        check_hw_limits(excitation, sys)
         ntuple(axis -> _pc_gradient_area(excitation.GR[axis, 2]), 3)
     else
         any(is_GR_on, excitation.GR) && error(
@@ -272,10 +285,10 @@ function build_pc(
          for first in 1:lines_per_bin:length(spatial_encodings)]
     end
 
-    trigger_duration = ceil_to_raster(post_trigger_delay, sys.DUR_Δt)
+    trigger_duration = ceil_to_raster(post_trigger_delay, sys.limits.DUR_Δt)
     trigger = isnothing(trigger_channel) ? nothing : build_trigger(
         trigger_channel;
-        duration=trigger_duration * u"s",
+        duration=trigger_duration,
         sys,
     )
 
@@ -369,10 +382,10 @@ function build_pc(
     sequence.DEF["LinesPerCardiacBin"] = lines_per_bin
     sequence.DEF["LeadTime"] = lead_time
     sequence.DEF["BandwidthPerPixel"] = actual_BWpp
-    sequence.DEF["Venc"] = Float64(venc)
+    sequence.DEF["Venc"] = venc
     sequence.DEF["VelocityEncodingAxis"] = String(
         isnothing(_encoding_axis) ? velocity_axis : _encoding_axis)
-    sequence.DEF["RfSpoilIncrement"] = Float64(rf_spoil_increment)
+    sequence.DEF["RfSpoilIncrement"] = rf_spoil_increment
     isnothing(trigger_channel) ||
         (sequence.DEF["TriggerChannel"] = String(trigger_channel))
 

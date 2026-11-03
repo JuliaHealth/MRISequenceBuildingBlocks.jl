@@ -1,0 +1,11 @@
+[deps]
+KomaMRIBase = "d0bc0b20-b151-4d03-b2a4-6ca51751cb9c"
+KomaMRIFiles = "fcf631a6-1c7e-4e88-9e64-b8888386d9dc"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[compat]
+KomaMRIBase = "0.15.2"
+KomaMRIFiles = "0.12"
+Test = "1"
+Unitful = "1"
