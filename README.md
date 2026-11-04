@@ -7,7 +7,7 @@
 
 [![Build Status](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl)
-[![Julia 1.10](https://img.shields.io/badge/Julia-1.10-9558B2)](https://julialang.org/downloads/)
+[![Julia 1.10](https://img.shields.io/badge/julia-v1.10-9558B2?logo=julia)](https://julialang.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Composable MRI pulse-sequence builders with Pulseq support.
