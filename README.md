@@ -1,10 +1,9 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.png">
-    <img alt="MRISequenceBuildingBlocks.jl" src="docs/assets/logo-light.png" width="850">
-  </picture>
+  <img alt="MRISequenceBuildingBlocks.jl" src="./docs/assets/logo-light.png#gh-light-mode-only" width="850">
+  <img alt="MRISequenceBuildingBlocks.jl" src="./docs/assets/logo-dark.png#gh-dark-mode-only" width="850">
 </p>
+
+<div align="center">
 
 [![Build Status](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl)
@@ -12,6 +11,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Composable MRI pulse-sequence builders with Pulseq support.
+
+</div>
 
 ## Installation
 
@@ -36,11 +37,9 @@ bandwidth_per_pixel = 500.0
 echo_time = 10e-3
 phase_encode = 16
 
-excitation = PD.build_sinc_pulse(flip_angle; sys, duration=rf_duration,
-    slice_thickness, use=Excitation())
+excitation = PD.build_sinc_pulse(flip_angle; sys, duration=rf_duration, slice_thickness, use=Excitation())
 readout = SBB.gre_readout_kernel(FOV, matrix, sys, bandwidth_per_pixel; rewind_m0=true)
-sequence = SBB.build_spin_echo(excitation, readout, sys, phase_encode;
-    slice_thickness, TE=echo_time)
+sequence = SBB.build_spin_echo(excitation, readout, sys, phase_encode; slice_thickness, TE=echo_time)
 
 write_seq(sequence, "spin_echo.seq"; sys)
 ```
