@@ -1,4 +1,10 @@
-# MRISequenceBuildingBlocks.jl
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/logo-light.png">
+    <img alt="MRISequenceBuildingBlocks.jl" src="docs/assets/logo-light.png" width="850">
+  </picture>
+</p>
 
 [![Build Status](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/JuliaHealth/MRISequenceBuildingBlocks.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaHealth/MRISequenceBuildingBlocks.jl)
