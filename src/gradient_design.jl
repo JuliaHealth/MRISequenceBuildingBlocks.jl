@@ -1,4 +1,24 @@
 """
+    build_moment_compensation(seq, sys; target_moment=(0.0, 0.0, 0.0))
+
+Build simultaneous X/Y/Z trapezoids so their physical gradient areas plus
+those of all blocks in `seq` equal `target_moment` [T*s/m]. Append as a
+rewinder or prepend as a prewinder. The default cancels the zeroth moment.
+RF-induced coherence reversals are not included in this area calculation.
+"""
+function build_moment_compensation(seq, sys; target_moment=(0.0, 0.0, 0.0))
+    target_moment = to_SI.(target_moment)
+    length(target_moment) == 3 || error("target_moment must contain X/Y/Z areas [T*s/m].")
+    moments = ntuple(axis -> target_moment[axis] - sum(area, seq.GR[axis,:]; init=0.0), 3)
+    compensation = Sequence(sys)
+    addblock!(compensation;
+        x=make_trapezoid(; area=moments[1] * γ, sys),
+        y=make_trapezoid(; area=moments[2] * γ, sys),
+        z=make_trapezoid(; area=moments[3] * γ, sys))
+    return compensation
+end
+
+"""
     _lobe_timing(moment, sys)
 
 Return the flat-top and ramp durations for the minimum-time trapezoid that

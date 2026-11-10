@@ -98,7 +98,6 @@ function _epi_readout_line(
     polarity=1.0,
     line_index=0,
     navigator=false,
-    average=0,
 )
     reversed = polarity < 0
     RO = Sequence(sys)
@@ -127,7 +126,6 @@ function _epi_readout_line(
         make_label(:SET, :REV, reversed),
         make_label(:SET, :SEG, reversed),
         make_label(:SET, :NAV, navigator),
-        make_label(:SET, :AVG, average),
     ]
     return RO
 end
@@ -283,7 +281,6 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
                 polarity=isodd(line) ? 1.0 : -1.0,
                 line_index=full_precenter,
                 navigator=true,
-                average=line == n_lines,
             )
         end
         seq += _epi_gradient_lobe(
@@ -297,7 +294,6 @@ function _epi_base(FOV, matrix, sys::Scanner, BWpp::Real;
                 make_label(:SET, :REV, 0),
                 make_label(:SET, :SEG, 0),
                 make_label(:SET, :NAV, 0),
-                make_label(:SET, :AVG, 0),
             ],
         )
         return seq
@@ -386,14 +382,15 @@ timing already designed by [`epi_readout_kernel`](@ref). The navigator acquires
 gradient moment, so either odd or even line counts are valid.
 
 Navigator ADC blocks carry `NAV=1`, the zero-based center-line `LIN`, and
-matching `REV`/`SEG` polarity state. `AVG` is zero except on the final
-navigator line, where it is one. The terminal
-rewinder resets `NAV`, `REV`, `SEG`, and `AVG` to zero so those states cannot
+matching `REV`/`SEG` polarity state. No `AVG` labels are generated for
+navigator or imaging lines. The terminal
+rewinder resets `NAV`, `REV`, and `SEG` to zero so those states cannot
 leak into a following readout. `post_delay` is a required nonnegative delay
 between the navigator and subsequent imaging excitation, rounded up to the
 block raster. The returned sequence can be prepended to an EPI acquisition or
 passed as the `navigator` keyword to [`build_grase`](@ref) or
-[`build_tse`](@ref).
+[`build_tse`](@ref). A spoiler requested in the EPI kernel is included after
+the navigator rewinder and before `post_delay`.
 """
 function build_epi_navigator(excitation, epi_kernel; n_lines=3, post_delay)
     post_delay = to_SI(post_delay)
@@ -432,8 +429,8 @@ The returned named tuple contains:
 - `BWpp`, `n_shots`, `shot_partition`, and `rewind_m0`: the requested design
   values.
 
-ADC blocks carry zero-based `LIN` labels plus `REV`, `SEG`, `NAV`, and `AVG`
-state. `FOV` and returned timing values use SI units.
+ADC blocks carry zero-based `LIN` labels plus `REV`, `SEG`, and `NAV`
+state; no `AVG` labels are generated. `FOV` and returned timing values use SI units.
 
 # Keywords
 - `BWpp`: Readout bandwidth per pixel. [`Hz/pixel`]
@@ -444,6 +441,8 @@ state. `FOV` and returned timing values use SI units.
   group. Pass `:contiguous` for adjacent line groups.
 - `rewind_m0=true`: Append a simultaneous x/y rewinder so every group ends with
   zero gradient zeroth moment.
+- `spoiler_phase=0.0`: Append identical X/Z spoilers after each readout and
+  navigator, with this phase across one realized X voxel. [`rad`]
 """
 function epi_readout_kernel(FOV, matrix, sys::Scanner;
     BWpp,
@@ -451,6 +450,7 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
     n_shots=1,
     shot_partition=:interleaved,
     rewind_m0=true,
+    spoiler_phase=0.0,
 )
     FOV = to_SI.(FOV)
     BWpp = to_SI(BWpp)
@@ -465,6 +465,14 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
         rewind_m0,
     )
 
+    spoiler = Sequence(sys)
+    if !iszero(spoiler_phase)
+        spoiler_area = spoiler_phase / (2π * γ * (FOV[1] / matrix[1]))
+        addblock!(spoiler;
+            x=make_trapezoid(; area=spoiler_area * γ, sys),
+            z=make_trapezoid(; area=spoiler_area * γ, sys))
+    end
+
     function validate_shot(shot)
         1 ≤ shot ≤ n_shots || error(
             "shot must be between 1 and $n_shots (got $shot)")
@@ -472,7 +480,7 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
 
     function readout(shot::Integer=1)
         validate_shot(shot)
-        return _materialize_gradients(base.readout(shot))
+        return _materialize_gradients(base.readout(shot)) + spoiler
     end
 
     function center_time(seq::Sequence, shot::Integer=1)
@@ -502,6 +510,7 @@ function epi_readout_kernel(FOV, matrix, sys::Scanner;
         @addblock begin
             seq += excitation
             seq += base.navigator_readout(n_lines)
+            seq += spoiler
             actual_post_delay > 0 &&
                 (seq += make_delay(actual_post_delay))
         end

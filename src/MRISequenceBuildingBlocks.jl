@@ -2,6 +2,7 @@ module MRISequenceBuildingBlocks
 
 using .Threads: @threads, nthreads
 using KomaMRIBase
+using JLD2
 using KomaMRIBase.PulseDesigner:
     build_adc, build_block_pulse, build_delay, build_sinc_pulse, build_trigger,
     make_adc, make_delay, make_label, make_sinc_pulse, make_trapezoid
@@ -11,6 +12,7 @@ include("gradient_design.jl")
 include("utils.jl")
 include("cartesian.jl")
 include("postprocess.jl")
+include("excitation.jl")
 include("gre.jl")
 include("PC.jl")
 include("epi.jl")
@@ -21,6 +23,8 @@ include("grase.jl")
 include("tse.jl")
 include("spi.jl")
 
+export build_moment_compensation, build_hard_pulse, load_rf_excitation, remove_labels!
+export se_epi
 export cartesian_line_order
 export gre_readout_kernel, sgre_base
 export build_pc, build_pc_encoding_scans

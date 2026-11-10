@@ -159,16 +159,16 @@ function _build_refocusing_block(
 end
 
 
-function _z_lobe(target_area, sys)
+function _z_lobe(target_area, sys; duration=nothing)
     iszero(target_area) && return Sequence(sys)
-    gradient = make_trapezoid(; area=target_area * γ, sys)
+    gradient = make_trapezoid(; area=target_area * γ, duration, sys)
     seq = Sequence(sys)
     addblock!(seq; z=gradient)
     return seq
 end
 
 
-function _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
+function _crusher_pair(crusher_phase, slice_thickness, sys, refocus; duration=nothing)
     desired_area = crusher_phase / (2π * γ * slice_thickness)
     refocusing_center = _sequence_rf_center(refocus)
     slice_gradient = refocus.GR[3, 1]
@@ -176,7 +176,7 @@ function _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
         _gradient_area_between(slice_gradient, 0.0, refocusing_center)
     post_area = desired_area -
         _gradient_area_between(slice_gradient, refocusing_center, dur(slice_gradient))
-    return _z_lobe(pre_area, sys), _z_lobe(post_area, sys)
+    return _z_lobe(pre_area, sys; duration), _z_lobe(post_area, sys; duration)
 end
 
 
@@ -276,6 +276,7 @@ function _fit_spin_echo_timing(
     sys,
     TE;
     crusher_phase,
+    crusher_duration,
     refocusing_phase,
     refocusing_bandwidth,
     refocusing_time_bw_product,
@@ -294,8 +295,8 @@ function _fit_spin_echo_timing(
             apodization=refocusing_apodization,
             rf_shift,
         )
-        pre_crusher, post_crusher =
-            _crusher_pair(crusher_phase, slice_thickness, sys, refocus)
+        pre_crusher, post_crusher = _crusher_pair(
+            crusher_phase, slice_thickness, sys, refocus; duration=crusher_duration)
         refocusing_center = _sequence_rf_center(refocus)
 
         pre_arm = excitation_tail + dur(pre_crusher) + refocusing_center
@@ -401,7 +402,10 @@ the readout sequence, making it directly appendable here.
 - `slice_thickness`: Refocusing slice thickness. [`m`]
 - `TE=nothing`: Echo time measured from the excitation RF center. `nothing`
   selects the minimum feasible TE. [`s`]
-- `crusher_phase=0.0`: Crusher phase accumulation across the slice. [`rad`]
+- `crusher_phase=0.0`: Phase across the slice on each side of the refocusing
+  center, including that half of the slice-select gradient. [`rad`]
+- `crusher_duration=nothing`: Duration of each separate crusher lobe, rounded
+  up to the gradient raster. `nothing` selects minimum-time lobes. [`s`]
 - `refocusing_phase=π/2`: Refocusing RF phase. [`rad`]
 - `refocusing_bandwidth=nothing`: Refocusing bandwidth. [`Hz`]
 - `refocusing_time_bw_product=4`: Refocusing RF time-bandwidth product.
@@ -409,6 +413,16 @@ the readout sequence, making it directly appendable here.
 - `min_post_delay=0.0`: Minimum delay between the post-crusher and readout. [`s`]
 """
 function build_spin_echo(
+    excitation, readout_kernel, sys, readout_args...; kwargs...,
+)
+    parts = _spin_echo_parts(excitation, readout_kernel, sys, readout_args...; kwargs...)
+    seq = excitation + parts.delay_before_180 + parts.crushed_180 +
+        parts.delay_before_epi + parts.epi_readout
+    seq.DEF["TE"] = parts.TE
+    return seq
+end
+
+function _spin_echo_parts(
     excitation,
     readout_kernel,
     sys,
@@ -416,19 +430,24 @@ function build_spin_echo(
     slice_thickness,
     TE=nothing,
     crusher_phase=0.0,
+    crusher_duration=nothing,
     refocusing_phase=π / 2,
     refocusing_bandwidth=nothing,
     refocusing_time_bw_product=4,
     refocusing_apodization=0.46,
     min_post_delay=0.0,
 )
-    slice_thickness, TE, crusher_phase, refocusing_phase,
+    slice_thickness, TE, crusher_phase, crusher_duration, refocusing_phase,
         refocusing_bandwidth, min_post_delay =
-        to_SI.((slice_thickness, TE, crusher_phase, refocusing_phase,
+        to_SI.((slice_thickness, TE, crusher_phase, crusher_duration, refocusing_phase,
             refocusing_bandwidth, min_post_delay))
     isnothing(TE) || TE > 0 || error("TE must be positive or nothing.")
     slice_thickness > 0 || error("slice_thickness must be positive.")
     min_post_delay >= 0 || error("min_post_delay must be non-negative.")
+    isnothing(crusher_duration) || crusher_duration > 0 ||
+        error("crusher_duration must be positive or nothing.")
+    actual_crusher_duration = isnothing(crusher_duration) ? nothing :
+        ceil_to_raster(crusher_duration, sys.limits.GR_Δt)
 
     readout = readout_kernel.readout(readout_args...)
     center = readout_kernel.center_time(readout_args...)
@@ -447,6 +466,7 @@ function build_spin_echo(
             sys,
             TE;
             crusher_phase,
+            crusher_duration=actual_crusher_duration,
             refocusing_phase,
             refocusing_bandwidth,
             refocusing_time_bw_product,
@@ -454,15 +474,10 @@ function build_spin_echo(
             min_post_delay,
         )
 
-    seq = Sequence(sys)
-    seq += excitation
-    pre_delay > 0 && (seq += make_delay(pre_delay))
-    seq += pre_crusher
-    seq += refocus
-    seq += post_crusher
-    post_delay > 0 && (seq += make_delay(post_delay))
-    seq += readout
-
-    seq.DEF["TE"] = actual_TE
-    return seq
+    delay_before_180 = Sequence(sys)
+    pre_delay > 0 && (delay_before_180 += make_delay(pre_delay))
+    delay_before_epi = Sequence(sys)
+    post_delay > 0 && (delay_before_epi += make_delay(post_delay))
+    return (;delay_before_180, crushed_180=pre_crusher + refocus + post_crusher,
+        delay_before_epi, epi_readout=readout, TE=actual_TE)
 end
