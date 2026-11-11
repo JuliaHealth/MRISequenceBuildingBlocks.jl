@@ -45,6 +45,9 @@ end
     @test dur(capped) < 15e-3
     @test get_flip_angles(capped)[2] ≈ 90.0
     @test SBB.build_pencil_beam(π/2, 0.080, 0.256, 40, sys; B1=30e-6) ≈ seq
+    reversed = SBB.build_pencil_beam(-π/2, 0.080, 0.256, 40, sys; B1=12e-6)
+    @test area(reversed.RF[1, 2]) ≈ -area(capped.RF[1, 2])
+    @test maximum(abs, reversed.RF[1, 2].A) <= 12e-6
     low_B1_sys = Scanner(limits=HardwareLimits(B1=1e-6, Gmax=30e-3, Smax=150.0,
         RF_dead_time=120e-6, RF_ring_down_time=50e-6))
     low_B1 = SBB.build_pencil_beam(π/2, 0.080, 0.256, 40, low_B1_sys)
@@ -53,6 +56,9 @@ end
     @test get_flip_angles(low_B1)[2] ≈ 90.0
     @test isnothing(check_timing(low_B1, low_B1_sys))
     @test isnothing(check_hw_limits(low_B1, low_B1_sys))
+    positions = [(x, 0.0) for x in (0.0, 0.020, 0.040, 0.060)]
+    @test all(isapprox.(abs.(pencil_beam_profile(low_B1, positions)),
+        abs.(pencil_beam_profile(seq, positions)); atol=0.02))
 
     # Independently integrate the small-tip response from the emitted events.
     for diameter in (0.060, 0.080)
@@ -71,11 +77,12 @@ end
 
     mktempdir() do directory
         path = joinpath(directory, "pencil_beam.seq")
-        write_seq(seq, path; sys, verbose=false)
+        write_seq(capped, path; sys, verbose=false)
         serialized = read_seq(path; verify_signature=true, verbose=false)
         @test length(serialized) == 2
         @test !any(is_ADC_on, serialized.ADC)
         @test get_flip_angles(serialized)[2] ≈ 90.0
+        @test maximum(abs, serialized.RF[1, 2].A) <= 12e-6
         @test isnothing(check_timing(serialized, sys))
         @test isnothing(check_hw_limits(serialized, sys))
         @test all(axis -> abs(sum(area, serialized.GR[axis, :])) < 1e-10, 1:3)
