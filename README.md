@@ -65,14 +65,17 @@ Physical inputs use SI units. Unitful quantities are also accepted when
 
 ## Functions
 
-- Spin Echo: `build_spin_echo`, `build_se_epi`, `build_grase`, `build_tse`
+- Excitation: `build_hard_pulse`, `load_rf_excitation`, `build_pencil_beam`
+- Spin Echo: `build_spin_echo`, `se_epi`, `build_se_epi`, `build_grase`, `build_tse`
 - Spoiled Gradient Echo: `sgre_base`
 - Balanced SSFP: `build_cartesian_bssfp`, `build_cine_bssfp`
 - Phase Contrast: `build_pc`, `build_pc_encoding_scans`
 - Single Point Imaging: `build_spi`
 - Readout Kernels: `gre_readout_kernel`, `sgre_base`, `bssfp_readout_kernel`, `epi_readout_kernel`
 - Navigators: `build_epi_navigator`
+- Gradient Moments: `build_moment_compensation`
 - Encoding Order: `cartesian_line_order`, `spi_linear_order`, `spi_center_out_order`
+- Labels: `remove_labels!`
 
 
 Use Julia help, for example `?build_tse`, for arguments and return values.

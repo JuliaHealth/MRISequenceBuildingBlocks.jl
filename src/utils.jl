@@ -1,4 +1,18 @@
 """
+    remove_labels!(seq, labels)
+
+Remove `LabelSet` and `LabelInc` extensions whose names occur in `labels`,
+an iterable of strings, and return `seq`. All other extensions and events
+are preserved. For example, `remove_labels!(seq, ("AVG",))`.
+"""
+function remove_labels!(seq, labels)
+    for extensions in seq.EXT
+        filter!(ext -> !(ext isa Union{LabelSet,LabelInc} && ext.labelstring in labels), extensions)
+    end
+    return seq
+end
+
+"""
     _rf_excitation(excitation, scale; block=1, coil=1)
 
 Return a copy of one excitation block with the selected RF event scaled and

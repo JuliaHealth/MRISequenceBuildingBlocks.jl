@@ -1,42 +1,53 @@
-function _se_epi_shots(
-    excitation,
-    epi_kernel,
-    sys,
-    slice_thickness,
-    TE;
-    crusher_phase,
-    refocusing_phase,
-    refocusing_bandwidth,
-    refocusing_time_bw_product,
-    refocusing_apodization,
-)
-    function build_shot(shot, echo_time)
-        return build_spin_echo(
-            excitation,
-            epi_kernel,
-            sys,
-            shot;
-            slice_thickness,
-            TE=echo_time,
-            crusher_phase,
-            refocusing_phase,
-            refocusing_bandwidth,
-            refocusing_time_bw_product,
-            refocusing_apodization,
-        )
+"""
+    shot = se_epi(excitation, epi_kernel, sys; slice_thickness, TE=nothing, kwargs...)
+
+Plan SE-EPI shots as named, independently appendable sequence parts. For shot
+`i`, `shot(i)` returns `delay_before_180`, `crushed_180`, `delay_before_epi`,
+`epi_readout`, and `TE`. The excitation is supplied separately by the caller:
+
+```julia
+parts = shot(i)
+@addblock seq += excitation + parts.delay_before_180 + parts.crushed_180 +
+    parts.delay_before_epi + parts.epi_readout
+```
+
+`crushed_180` contains Z crusher → slice-selective 180° → Z crusher.
+Readouts include any spoiler requested in `epi_readout_kernel`. TE targets
+the EPI train midpoint, using `epi_kernel.echo_center_time`. With `TE=nothing`,
+select a common minimum feasible TE across all shots. Other keywords follow
+[`build_spin_echo`](@ref). Returned parts are copies, so disabling ADCs for a
+dummy does not change subsequent shots. NAV, dummy ordering, and TR delays
+are assembled by the caller.
+"""
+function se_epi(excitation, epi_kernel, sys; slice_thickness, TE=nothing, kwargs...)
+    slice_thickness, TE = to_SI.((slice_thickness, TE))
+    parts = _se_epi_shots(excitation, epi_kernel, sys; slice_thickness, TE, kwargs...)
+    return i -> deepcopy(parts[i])
+end
+
+function _se_epi_shots(excitation, epi_kernel, sys;
+    slice_thickness, TE=nothing, train_center=true, kwargs...)
+    center_time = train_center ? epi_kernel.echo_center_time : epi_kernel.center_time
+    train = (readout=epi_kernel.readout, center_time)
+    make_parts(i, echo_time) = _spin_echo_parts(excitation, train, sys, i;
+        slice_thickness, TE=echo_time, kwargs...)
+    if isnothing(TE)
+        minimum_parts = [make_parts(i, nothing) for i in eachindex(epi_kernel.lines)]
+        if train_center
+            minimum_TE = maximum(minimum_parts) do parts
+                first_half = dur(excitation) - _sequence_rf_center(excitation) +
+                    dur(parts.delay_before_180) + _sequence_rf_center(parts.crushed_180)
+                2 * max(first_half, parts.TE - first_half)
+            end
+            TE = ceil_to_raster(minimum_TE, sys.limits.DUR_Δt)
+        else
+            # Preserve build_se_epi's original center and minimum-TE policy.
+            length(minimum_parts) == 1 && return minimum_parts
+            TE = ceil_to_raster(maximum(parts.TE for parts in minimum_parts) +
+                sys.limits.DUR_Δt, sys.limits.DUR_Δt)
+        end
     end
-
-    shots = eachindex(epi_kernel.lines)
-    isnothing(TE) || return [build_shot(shot, TE) for shot in shots]
-
-    minimum_shots = [build_shot(shot, nothing) for shot in shots]
-    length(minimum_shots) == 1 && return minimum_shots
-
-    common_TE = ceil_to_raster(
-        maximum(shot.DEF["TE"] for shot in minimum_shots) + sys.limits.DUR_Δt,
-        sys.limits.DUR_Δt,
-    )
-    return [build_shot(shot, common_TE) for shot in shots]
+    return [merge(make_parts(i, TE), (;TE)) for i in eachindex(epi_kernel.lines)]
 end
 
 
@@ -54,6 +65,8 @@ fixed delay block. `trigger_channel` and `post_shot_delay` are mutually
 exclusive. With `TE=nothing`, a single-shot acquisition uses its minimum TE;
 multishot acquisitions use a common TE one block raster above the largest
 individually minimized shot TE. A requested `TE` is applied to every shot.
+This preserves the original `epi_kernel.center_time` target (the line nearest
+ky=0). Use [`se_epi`](@ref) for named parts timed to the EPI train midpoint.
 
 # Keywords
 - `slice_thickness`: Refocusing slice thickness and third FOV dimension. [`m`]
@@ -82,10 +95,8 @@ function build_se_epi(
     refocusing_time_bw_product=4,
     refocusing_apodization=0.46,
 )
-    slice_thickness, TE, post_shot_delay, crusher_phase,
-        refocusing_phase, refocusing_bandwidth =
-        to_SI.((slice_thickness, TE, post_shot_delay, crusher_phase,
-            refocusing_phase, refocusing_bandwidth))
+    slice_thickness, TE, post_shot_delay, crusher_phase, refocusing_phase, refocusing_bandwidth =
+        to_SI.((slice_thickness, TE, post_shot_delay, crusher_phase, refocusing_phase, refocusing_bandwidth))
     for property in (:readout, :center_time, :lines, :FOV, :matrix, :rewind_m0)
         hasproperty(epi_kernel, property) ||
             error("The EPI kernel must provide `$property`.")
@@ -112,9 +123,10 @@ function build_se_epi(
     shots = _se_epi_shots(
         excitation,
         epi_kernel,
-        sys,
+        sys;
         slice_thickness,
-        TE;
+        TE,
+        train_center=false,
         crusher_phase,
         refocusing_phase,
         refocusing_bandwidth,
@@ -123,18 +135,19 @@ function build_se_epi(
     )
 
     seq = Sequence(sys)
-    for shot in shots
+    for parts in shots
         if !isnothing(trigger)
             @addblock seq += trigger
         end
-        @addblock seq += shot
+        @addblock seq += excitation + parts.delay_before_180 + parts.crushed_180 +
+            parts.delay_before_epi + parts.epi_readout
         if !isnothing(shot_delay)
             @addblock seq += shot_delay
         end
     end
 
     pop!(seq.DEF, "TE", nothing)
-    seq.DEF["FOV"] = [epi_kernel.FOV..., slice_thickness]
+    seq.DEF["FOV"] = [epi_kernel.FOV..., Float64(slice_thickness)]
     seq.DEF["Nx"], seq.DEF["Ny"] = epi_kernel.matrix
     seq.DEF["Nz"] = 1
     return seq
