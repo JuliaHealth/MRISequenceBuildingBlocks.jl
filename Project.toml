@@ -1,7 +1,7 @@
 name = "MRISequenceBuildingBlocks"
 uuid = "d690e863-3bce-4d76-95b0-1646fb2c45b6"
 authors = ["Charles McGrath <cmmcg@stanford.edu>", "Carlos Castillo Passi <cacp@stanford.edu>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
