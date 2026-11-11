@@ -7,3 +7,4 @@ using KomaMRIFiles: read_seq, write_seq
 include("geometry.jl")
 include("api_units.jl")
 include("rf_se_epi.jl")
+include("pencil_beam.jl")
